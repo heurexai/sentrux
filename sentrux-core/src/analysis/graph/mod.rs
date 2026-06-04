@@ -54,6 +54,7 @@ pub fn build_graphs(
     let mut import_edges = resolve_path_imports_ref(files, scan_root);
     if let Some(root) = scan_root {
         import_edges.extend(crate::analysis::project_refs::build_project_reference_edges(files, root));
+        import_edges.extend(crate::analysis::csharp_refs::build_csharp_reference_edges(files, root));
     }
     let t_imports = t0.elapsed();
 

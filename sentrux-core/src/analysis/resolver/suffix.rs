@@ -165,6 +165,9 @@ fn resolve_tier2_imports(
         .par_iter()
         .filter(|f| !f.is_dir)
         .flat_map_iter(|file| {
+            if crate::analysis::csharp_refs::is_csharp_source(file) {
+                return Vec::new();
+            }
             let imports = match file.sa.as_ref().and_then(|sa| sa.imp.as_ref()) {
                 Some(imp) => imp,
                 None => return Vec::new(),

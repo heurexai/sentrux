@@ -7,6 +7,7 @@
 #[cfg(test)]
 pub(crate) mod test_helpers;
 
+pub mod csharp_refs;
 pub mod entry_points;
 pub mod git;
 pub mod graph;
