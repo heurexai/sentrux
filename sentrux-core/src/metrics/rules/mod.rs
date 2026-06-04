@@ -187,8 +187,9 @@ pub fn check_rules(
     RuleCheckResult { passed, violations, rules_checked }
 }
 
-/// Check layer ordering: files in higher layers must not import files in lower layers.
-/// Layers are ordered by their `order` field or array position (first = highest/presentation, last = lowest/infrastructure).
+/// Check layer ordering: files in lower/foundational layers must not import
+/// files in higher/application layers.
+/// Layers are ordered by their `order` field or array position (lower = more foundational).
 fn check_layers(layers: &[LayerDef], edges: &[ImportEdge]) -> Vec<RuleViolation> {
     let mut violations = Vec::new();
 
@@ -208,10 +209,10 @@ fn check_layers(layers: &[LayerDef], edges: &[ImportEdge]) -> Vec<RuleViolation>
         let to_layer = find_layer(&edge.to_file, &layer_order);
 
         if let (Some((from_ord, from_name)), Some((to_ord, to_name))) = (from_layer, to_layer) {
-            // Violation: importing from a higher-order (less foundational) layer
-            // Lower order = more foundational. A file in order=2 importing order=0 is wrong
-            // (infrastructure importing presentation).
-            if from_ord > to_ord {
+            // Violation: lower/foundational layer importing a higher/application layer.
+            // A file in order=0 importing order=2 is wrong; order=2 importing order=0
+            // is the normal downward dependency direction.
+            if from_ord < to_ord {
                 violations.push(RuleViolation {
                     rule: "layer_direction".into(),
                     severity: Severity::Error,

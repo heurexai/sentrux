@@ -2,7 +2,6 @@
 mod tests {
     use crate::analysis::graph::*;
     use crate::analysis::test_helpers::make_file;
-    use crate::core::types::ImportEdge;
     use crate::core::types::{FileNode, StructuralAnalysis};
 
     #[test]
@@ -430,6 +429,38 @@ mod tests {
         let refs: Vec<&FileNode> = files.iter().collect();
         let gr = build_graphs(&refs, None, 5);
         assert!(gr.import_edges.is_empty(), "None scan_root should return empty");
+    }
+
+    #[test]
+    fn dotnet_project_reference_creates_import_edge() {
+        let tmp = std::env::temp_dir().join(format!(
+            "sentrux_test_dotnet_project_ref_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src/App")).unwrap();
+        std::fs::create_dir_all(tmp.join("src/Core")).unwrap();
+        std::fs::write(
+            tmp.join("src/App/App.csproj"),
+            r#"<Project><ItemGroup>
+  <ProjectReference Include="..\Core\Core.csproj" />
+</ItemGroup></Project>"#,
+        ).unwrap();
+        std::fs::write(tmp.join("src/Core/Core.csproj"), "<Project />").unwrap();
+
+        let files = vec![
+            make_file("App.csproj", "src/App/App.csproj", "unknown", None),
+            make_file("Core.csproj", "src/Core/Core.csproj", "unknown", None),
+        ];
+
+        let refs: Vec<&FileNode> = files.iter().collect();
+        let gr = build_graphs(&refs, Some(&tmp), 5);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert_eq!(gr.import_edges.len(), 1, "expected project reference edge");
+        assert_eq!(gr.import_edges[0].from_file, "src/App/App.csproj");
+        assert_eq!(gr.import_edges[0].to_file, "src/Core/Core.csproj");
     }
 
 }

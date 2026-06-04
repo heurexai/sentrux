@@ -170,21 +170,21 @@ max_cycles = 5
     fn layer_violation_detected() {
         let config: RulesConfig = toml::from_str(r#"
 [[layers]]
-name = "presentation"
-paths = ["src/ui/*"]
+name = "core"
+paths = ["src/core/*"]
 order = 0
 
 [[layers]]
-name = "infrastructure"
-paths = ["src/scanner.rs"]
+name = "app"
+paths = ["src/app/*"]
 order = 2
 "#).unwrap();
 
-        // Infrastructure imports presentation = violation
-        let edges = vec![edge("src/scanner.rs", "src/ui/panel.rs")];
+        // Foundational core imports app = violation
+        let edges = vec![edge("src/core/kernel.rs", "src/app/shell.rs")];
         let snap = make_snapshot(edges.clone(), vec![
-            file("src/scanner.rs"),
-            file("src/ui/panel.rs"),
+            file("src/core/kernel.rs"),
+            file("src/app/shell.rs"),
         ]);
         let health = metrics::compute_health(&snap);
         let arch_report = arch::compute_arch(&snap);
@@ -198,21 +198,21 @@ order = 2
     fn layer_correct_direction_passes() {
         let config: RulesConfig = toml::from_str(r#"
 [[layers]]
-name = "presentation"
-paths = ["src/ui/*"]
+name = "core"
+paths = ["src/core/*"]
 order = 0
 
 [[layers]]
-name = "infrastructure"
-paths = ["src/scanner.rs"]
+name = "app"
+paths = ["src/app/*"]
 order = 2
 "#).unwrap();
 
-        // Presentation imports infrastructure = correct direction
-        let edges = vec![edge("src/ui/panel.rs", "src/scanner.rs")];
+        // App imports foundational core = correct downward direction
+        let edges = vec![edge("src/app/shell.rs", "src/core/kernel.rs")];
         let snap = make_snapshot(edges.clone(), vec![
-            file("src/ui/panel.rs"),
-            file("src/scanner.rs"),
+            file("src/app/shell.rs"),
+            file("src/core/kernel.rs"),
         ]);
         let health = metrics::compute_health(&snap);
         let arch_report = arch::compute_arch(&snap);
