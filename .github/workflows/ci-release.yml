@@ -52,7 +52,7 @@ jobs:
           # after Grammar Build succeeds. Download from the current tag.
           PLATFORM=$([ "$RUNNER_OS" = "macOS" ] && echo "darwin-arm64" || echo "linux-x86_64")
           TAG=${{ github.event.workflow_run.head_branch }}
-          URL="https://github.com/sentrux/sentrux/releases/download/${TAG}/grammars-${PLATFORM}.tar.gz"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/grammars-${PLATFORM}.tar.gz"
           mkdir -p ~/.sentrux/plugins
           curl -fsSL "$URL" -o /tmp/grammars.tar.gz
           tar xzf /tmp/grammars.tar.gz -C ~/.sentrux/plugins/

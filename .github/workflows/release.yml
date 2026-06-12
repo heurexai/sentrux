@@ -61,7 +61,8 @@ jobs:
               libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libvulkan-dev
           fi
 
-      - name: Checkout Pro crate (private)
+      - name: Checkout Pro crate (official release only)
+        if: github.repository == 'sentrux/sentrux'
         uses: actions/checkout@v4
         with:
           repository: sentrux/sentrux-pro
@@ -69,6 +70,7 @@ jobs:
           path: sentrux-pro-checkout
 
       - name: Link Pro crate paths
+        if: github.repository == 'sentrux/sentrux'
         shell: bash
         run: |
           mv sentrux-pro-checkout ../sentrux-pro
@@ -88,7 +90,12 @@ jobs:
           echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
 
       - name: Build release binary (with Pro)
+        if: github.repository == 'sentrux/sentrux'
         run: cargo build --release --manifest-path ../sentrux-pro/Cargo.toml --target-dir target --target ${{ matrix.target }}
+
+      - name: Build release binary (HeurEx fork)
+        if: github.repository != 'sentrux/sentrux'
+        run: cargo build --release -p sentrux --target-dir target --target ${{ matrix.target }}
 
       - name: Package binary
         shell: bash
@@ -116,6 +123,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.repository == 'sentrux/sentrux' && github.ref_name || format('Sentrux {0} (HeurEx fork)', github.ref_name) }}
           files: |
             sentrux-darwin-arm64/sentrux-darwin-arm64
             sentrux-linux-x86_64/sentrux-linux-x86_64
@@ -124,6 +132,7 @@ jobs:
           generate_release_notes: true
 
       - name: Update Homebrew formula
+        if: github.repository == 'sentrux/sentrux'
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
