@@ -10,10 +10,7 @@ use super::*;
 use std::collections::HashSet;
 
 fn edge(from: &str, to: &str) -> crate::core::types::ImportEdge {
-    crate::core::types::ImportEdge {
-        from_file: from.to_string(),
-        to_file: to.to_string(),
-    }
+    crate::core::types::ImportEdge::new(from, to)
 }
 
 // ── is_test_file tests ──

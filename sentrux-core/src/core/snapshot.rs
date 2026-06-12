@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::core::types::{CallEdge, EntryPoint, FileNode, ImportEdge, InheritEdge};
+use crate::core::types::{
+    CSharpReferenceStats, CallEdge, EntryPoint, FileNode, ImportEdge, InheritEdge,
+};
 
 /// Scan progress report — shared between scanner and channels.
 /// Lives in core (not scanner) to avoid channels importing scanner
@@ -33,6 +35,12 @@ pub struct Snapshot {
     pub total_lines: u32,
     /// Total number of directories
     pub total_dirs: u32,
+    /// Whether this snapshot included untracked, non-ignored Git worktree files.
+    #[serde(default)]
+    pub include_untracked: bool,
+    /// Diagnostics from the C# type-reference resolver.
+    #[serde(default)]
+    pub csharp_reference_stats: CSharpReferenceStats,
     /// Function-to-function call edges between files
     pub call_graph: Vec<CallEdge>,
     /// File-to-file import/require edges

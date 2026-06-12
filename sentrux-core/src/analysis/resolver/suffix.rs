@@ -4,7 +4,7 @@
 //! file paths. Handles relative imports, path aliases (from plugin-declared
 //! config files like tsconfig.json), and monorepo project boundaries.
 
-use crate::core::types::ImportEdge;
+use crate::core::types::{ImportEdge, ImportEdgeKind, ImportEdgeSource};
 use crate::core::types::FileNode;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -140,7 +140,16 @@ fn resolve_single_specifier(
             // everything in it is their project. Cross-sub-project imports are
             // real dependencies that the tool should show, not hide.
             stats.resolved_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Some(ImportEdge { from_file: src.file.path.clone(), to_file: target })
+            Some(ImportEdge::with_source(
+                src.file.path.clone(),
+                target,
+                ImportEdgeSource::with_symbol(
+                    ImportEdgeKind::Import,
+                    src.specifier,
+                    None,
+                    None,
+                ),
+            ))
         }
         None => {
             stats.unresolved_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -6,13 +6,27 @@
 //! edges only when a referenced type resolves unambiguously to another scanned
 //! source file.
 
-use crate::core::types::{FileNode, ImportEdge};
+use crate::core::types::{
+    CSharpReferenceStats, FileNode, ImportEdge, ImportEdgeKind, ImportEdgeSource,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Clone, Debug)]
 struct TypeDef {
     file: String,
+}
+
+pub(crate) struct CSharpReferenceResult {
+    pub(crate) edges: Vec<ImportEdge>,
+    pub(crate) stats: CSharpReferenceStats,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ReferenceCandidate {
+    symbol: String,
+    line: Option<u32>,
+    column: Option<u32>,
 }
 
 #[derive(Default)]
@@ -34,28 +48,41 @@ enum Token {
     Dot,
 }
 
+enum CandidateResolution {
+    Resolved(String),
+    Unresolved,
+    Ambiguous,
+}
+
 /// Build file-to-file dependency edges from C# type references.
 pub(crate) fn build_csharp_reference_edges(
     files: &[&FileNode],
     scan_root: &Path,
-) -> Vec<ImportEdge> {
+) -> CSharpReferenceResult {
     let csharp_files: Vec<&FileNode> = files
         .iter()
         .copied()
         .filter(|file| is_csharp_source(file))
         .collect();
     if csharp_files.is_empty() {
-        return Vec::new();
+        return CSharpReferenceResult {
+            edges: Vec::new(),
+            stats: CSharpReferenceStats::default(),
+        };
     }
 
     let mut file_cache = HashMap::new();
     let mut contexts = HashMap::new();
     let catalog = build_type_catalog(&csharp_files, scan_root, &mut file_cache, &mut contexts);
     if catalog.by_simple.is_empty() {
-        return Vec::new();
+        return CSharpReferenceResult {
+            edges: Vec::new(),
+            stats: CSharpReferenceStats::default(),
+        };
     }
 
     let mut edges = Vec::new();
+    let mut stats = CSharpReferenceStats::default();
     for file in csharp_files {
         let Some(content) = read_cached_content(file, scan_root, &mut file_cache) else {
             continue;
@@ -64,15 +91,29 @@ pub(crate) fn build_csharp_reference_edges(
             .entry(file.path.clone())
             .or_insert_with(|| parse_file_context(&content));
         let candidates = extract_reference_candidates(file, &content);
+        stats.candidates += candidates.len();
         for candidate in candidates {
-            let Some(target) = resolve_candidate(&candidate, ctx, &catalog) else {
-                continue;
-            };
-            if target != file.path {
-                edges.push(ImportEdge {
-                    from_file: file.path.clone(),
-                    to_file: target,
-                });
+            match resolve_candidate(&candidate.symbol, ctx, &catalog) {
+                CandidateResolution::Resolved(target) if target != file.path => {
+                    stats.resolved_references += 1;
+                    edges.push(ImportEdge::with_source(
+                        file.path.clone(),
+                        target,
+                        ImportEdgeSource::with_symbol(
+                            ImportEdgeKind::CsharpTypeReference,
+                            candidate.symbol,
+                            candidate.line,
+                            candidate.column,
+                        ),
+                    ));
+                }
+                CandidateResolution::Resolved(_) => {}
+                CandidateResolution::Unresolved => {
+                    stats.unresolved_references += 1;
+                }
+                CandidateResolution::Ambiguous => {
+                    stats.ambiguous_references += 1;
+                }
             }
         }
     }
@@ -81,9 +122,17 @@ pub(crate) fn build_csharp_reference_edges(
         a.from_file
             .cmp(&b.from_file)
             .then_with(|| a.to_file.cmp(&b.to_file))
+            .then_with(|| {
+                let a_symbol = a.sources.first().and_then(|s| s.symbol.as_deref()).unwrap_or("");
+                let b_symbol = b.sources.first().and_then(|s| s.symbol.as_deref()).unwrap_or("");
+                a_symbol.cmp(b_symbol)
+            })
     });
-    edges.dedup_by(|a, b| a.from_file == b.from_file && a.to_file == b.to_file);
-    edges
+    edges.dedup_by(|a, b| a.from_file == b.from_file
+        && a.to_file == b.to_file
+        && a.sources == b.sources);
+
+    CSharpReferenceResult { edges, stats }
 }
 
 pub(crate) fn is_csharp_source(file: &FileNode) -> bool {
@@ -221,28 +270,28 @@ fn record_name_index(tokens: &[Token], start: usize) -> Option<usize> {
     }
 }
 
-fn extract_reference_candidates(file: &FileNode, content: &str) -> HashSet<String> {
+fn extract_reference_candidates(file: &FileNode, content: &str) -> HashSet<ReferenceCandidate> {
     let mut candidates = HashSet::new();
     if let Some(sa) = &file.sa {
         if let Some(classes) = &sa.cls {
             for class in classes {
                 if let Some(bases) = &class.b {
                     for base in bases {
-                        insert_candidate(&mut candidates, base);
+                        insert_candidate(&mut candidates, content, base);
                     }
                 }
             }
         }
         if let Some(calls) = &sa.co {
             for call in calls {
-                insert_candidate(&mut candidates, call);
+                insert_candidate(&mut candidates, content, call);
             }
         }
         if let Some(functions) = &sa.functions {
             for func in functions {
                 if let Some(calls) = &func.co {
                     for call in calls {
-                        insert_candidate(&mut candidates, call);
+                        insert_candidate(&mut candidates, content, call);
                     }
                 }
             }
@@ -253,27 +302,56 @@ fn extract_reference_candidates(file: &FileNode, content: &str) -> HashSet<Strin
     let tokens = tokenize_idents_and_dots(&clean);
     for i in 0..tokens.len() {
         if let Some(word) = token_ident(&tokens, i) {
-            insert_candidate(&mut candidates, word);
+            insert_candidate(&mut candidates, content, word);
         }
         if let Some(chain) = dotted_chain_at(&tokens, i) {
-            insert_candidate(&mut candidates, &chain);
+            insert_candidate(&mut candidates, content, &chain);
         }
     }
     candidates
 }
 
-fn insert_candidate(candidates: &mut HashSet<String>, raw: &str) {
+fn insert_candidate(candidates: &mut HashSet<ReferenceCandidate>, content: &str, raw: &str) {
     let candidate = trim_type_candidate(raw);
     let last = candidate.rsplit('.').next().unwrap_or(&candidate);
     if is_type_like_name(last) && !is_csharp_keyword(last) {
-        candidates.insert(candidate);
+        let (line, column) = find_reference_location(content, &candidate);
+        candidates.insert(ReferenceCandidate {
+            symbol: candidate,
+            line,
+            column,
+        });
     }
 }
 
-fn resolve_candidate(candidate: &str, ctx: &FileContext, catalog: &TypeCatalog) -> Option<String> {
+fn find_reference_location(content: &str, symbol: &str) -> (Option<u32>, Option<u32>) {
+    if symbol.is_empty() {
+        return (None, None);
+    }
+    let needle = symbol.rsplit('.').next().unwrap_or(symbol);
+    let Some(pos) = content.find(needle) else {
+        return (None, None);
+    };
+
+    let mut line = 1u32;
+    let mut line_start = 0usize;
+    for (idx, ch) in content.char_indices() {
+        if idx >= pos {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + ch.len_utf8();
+        }
+    }
+    let column = content[line_start..pos].chars().count() as u32 + 1;
+    (Some(line), Some(column))
+}
+
+fn resolve_candidate(candidate: &str, ctx: &FileContext, catalog: &TypeCatalog) -> CandidateResolution {
     let candidate = trim_type_candidate(candidate);
     if candidate.is_empty() {
-        return None;
+        return CandidateResolution::Unresolved;
     }
 
     if let Some(alias_target) = ctx.aliases.get(&candidate) {
@@ -284,42 +362,58 @@ fn resolve_candidate(candidate: &str, ctx: &FileContext, catalog: &TypeCatalog) 
         return resolve_unique_full(&candidate, catalog);
     }
 
+    let mut saw_ambiguous = false;
     if !ctx.namespace.is_empty() {
         let same_namespace = format!("{}.{}", ctx.namespace, candidate);
-        if let Some(target) = resolve_unique_full(&same_namespace, catalog) {
-            return Some(target);
+        match resolve_unique_full(&same_namespace, catalog) {
+            CandidateResolution::Resolved(target) => return CandidateResolution::Resolved(target),
+            CandidateResolution::Ambiguous => saw_ambiguous = true,
+            CandidateResolution::Unresolved => {}
         }
     }
 
     for using_namespace in &ctx.usings {
         let full = format!("{}.{}", using_namespace, candidate);
-        if let Some(target) = resolve_unique_full(&full, catalog) {
-            return Some(target);
+        match resolve_unique_full(&full, catalog) {
+            CandidateResolution::Resolved(target) => return CandidateResolution::Resolved(target),
+            CandidateResolution::Ambiguous => saw_ambiguous = true,
+            CandidateResolution::Unresolved => {}
         }
     }
 
-    resolve_unique_simple(&candidate, catalog)
+    match resolve_unique_simple(&candidate, catalog) {
+        CandidateResolution::Unresolved if saw_ambiguous => CandidateResolution::Ambiguous,
+        other => other,
+    }
 }
 
-fn resolve_unique_full(full_name: &str, catalog: &TypeCatalog) -> Option<String> {
-    let defs = catalog.by_full.get(full_name)?;
+fn resolve_unique_full(full_name: &str, catalog: &TypeCatalog) -> CandidateResolution {
+    let Some(defs) = catalog.by_full.get(full_name) else {
+        return CandidateResolution::Unresolved;
+    };
     unique_file(defs)
 }
 
-fn resolve_unique_simple(simple_name: &str, catalog: &TypeCatalog) -> Option<String> {
-    let defs = catalog.by_simple.get(simple_name)?;
+fn resolve_unique_simple(simple_name: &str, catalog: &TypeCatalog) -> CandidateResolution {
+    let Some(defs) = catalog.by_simple.get(simple_name) else {
+        return CandidateResolution::Unresolved;
+    };
     unique_file(defs)
 }
 
-fn unique_file(defs: &[TypeDef]) -> Option<String> {
+fn unique_file(defs: &[TypeDef]) -> CandidateResolution {
     let mut unique = defs
         .iter()
         .map(|def| def.file.as_str())
         .collect::<HashSet<_>>();
     if unique.len() == 1 {
-        unique.drain().next().map(str::to_string)
+        unique
+            .drain()
+            .next()
+            .map(|file| CandidateResolution::Resolved(file.to_string()))
+            .unwrap_or(CandidateResolution::Unresolved)
     } else {
-        None
+        CandidateResolution::Ambiguous
     }
 }
 
@@ -618,6 +712,7 @@ fn is_csharp_keyword(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::analysis::test_helpers::make_file;
+    use crate::core::types::ImportEdgeKind;
 
     #[test]
     fn namespace_only_using_does_not_create_edge() {
@@ -640,11 +735,11 @@ mod tests {
             make_file("Engine.cs", "src/Core/Engine.cs", "csharp", None),
         ];
         let refs: Vec<&FileNode> = files.iter().collect();
-        let edges = build_csharp_reference_edges(&refs, &tmp);
+        let result = build_csharp_reference_edges(&refs, &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(
-            edges.is_empty(),
+            result.edges.is_empty(),
             "using-only namespace import should not be a dependency edge"
         );
     }
@@ -670,12 +765,16 @@ mod tests {
             make_file("Engine.cs", "src/Core/Engine.cs", "csharp", None),
         ];
         let refs: Vec<&FileNode> = files.iter().collect();
-        let edges = build_csharp_reference_edges(&refs, &tmp);
+        let result = build_csharp_reference_edges(&refs, &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
 
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].from_file, "src/App/Consumer.cs");
-        assert_eq!(edges[0].to_file, "src/Core/Engine.cs");
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0].from_file, "src/App/Consumer.cs");
+        assert_eq!(result.edges[0].to_file, "src/Core/Engine.cs");
+        assert_eq!(result.edges[0].sources[0].kind, ImportEdgeKind::CsharpTypeReference);
+        assert_eq!(result.edges[0].sources[0].symbol.as_deref(), Some("Engine"));
+        assert!(result.edges[0].sources[0].line.is_some());
+        assert_eq!(result.stats.resolved_references, 1);
     }
 
     #[test]
@@ -706,11 +805,33 @@ mod tests {
             make_file("Engine.cs", "src/Other/Engine.cs", "csharp", None),
         ];
         let refs: Vec<&FileNode> = files.iter().collect();
-        let edges = build_csharp_reference_edges(&refs, &tmp);
+        let result = build_csharp_reference_edges(&refs, &tmp);
         let _ = std::fs::remove_dir_all(&tmp);
 
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].to_file, "src/Core/Engine.cs");
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0].to_file, "src/Core/Engine.cs");
+        assert!(result.stats.ambiguous_references > 0);
+    }
+
+    #[test]
+    fn unresolved_type_references_are_reported_but_not_emitted() {
+        let tmp = temp_root("unresolved_type_reference");
+        std::fs::create_dir_all(tmp.join("src/App")).unwrap();
+        std::fs::write(
+            tmp.join("src/App/Consumer.cs"),
+            "namespace Ergon.App;\npublic sealed class Consumer { public MissingType Create() => null; }\n",
+        )
+        .unwrap();
+
+        let files = vec![
+            make_file("Consumer.cs", "src/App/Consumer.cs", "csharp", None),
+        ];
+        let refs: Vec<&FileNode> = files.iter().collect();
+        let result = build_csharp_reference_edges(&refs, &tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(result.edges.is_empty());
+        assert!(result.stats.unresolved_references >= 1);
     }
 
     fn temp_root(name: &str) -> std::path::PathBuf {

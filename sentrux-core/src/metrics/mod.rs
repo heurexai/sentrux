@@ -547,12 +547,16 @@ fn compute_module_metrics(
 
     let avg_cohesion = compute_avg_cohesion(dep_edges, call_edges, files);
     let max_depth = compute_max_depth(dep_edges, entry_points);
-    let circular_dep_files = detect_cycles(dep_edges);
-    let circular_dep_count = circular_dep_files.len();
+    let circular_dep_details = detect_cycle_details(dep_edges);
+    let circular_dep_files = circular_dep_details
+        .iter()
+        .map(|detail| detail.files.clone())
+        .collect();
+    let circular_dep_count = circular_dep_details.len();
 
     ModuleMetrics {
         coupling_score, cross_module_edges, entropy, entropy_bits, entropy_num_pairs,
-        avg_cohesion, max_depth, circular_dep_files, circular_dep_count,
+        avg_cohesion, max_depth, circular_dep_files, circular_dep_details, circular_dep_count,
     }
 }
 
@@ -599,6 +603,7 @@ pub fn compute_health(snapshot: &Snapshot) -> HealthReport {
         coupling_score: mm.coupling_score,
         circular_dep_count: mm.circular_dep_count,
         circular_dep_files: mm.circular_dep_files,
+        circular_dep_details: mm.circular_dep_details,
         total_import_edges: dep_edges.len(),
         cross_module_edges: mm.cross_module_edges,
         entropy: mm.entropy,
@@ -633,6 +638,60 @@ pub fn compute_health(snapshot: &Snapshot) -> HealthReport {
         root_cause_raw,
         root_cause_scores,
     }
+}
+
+/// Format a complete rules-check result as stable JSON for CLI/build gates.
+pub fn check_report_json(
+    check: &rules::RuleCheckResult,
+    health: &HealthReport,
+    snapshot: &Snapshot,
+) -> String {
+    let payload = serde_json::json!({
+        "pass": check.passed,
+        "rules_checked": check.rules_checked,
+        "quality_signal": (health.quality_signal * 10000.0).round() as u32,
+        "scan": {
+            "include_untracked": snapshot.include_untracked,
+            "files": snapshot.total_files,
+            "lines": snapshot.total_lines,
+            "import_edges": snapshot.import_graph.len()
+        },
+        "csharp_references": {
+            "candidates": snapshot.csharp_reference_stats.candidates,
+            "resolved": snapshot.csharp_reference_stats.resolved_references,
+            "unresolved": snapshot.csharp_reference_stats.unresolved_references,
+            "ambiguous": snapshot.csharp_reference_stats.ambiguous_references,
+            "enforced_as_cycles": false
+        },
+        "cycles": health.circular_dep_details.iter().map(cycle_detail_json).collect::<Vec<_>>(),
+        "violations": check.violations.iter().map(|v| serde_json::json!({
+            "rule": &v.rule,
+            "severity": format!("{:?}", v.severity),
+            "message": &v.message,
+            "files": &v.files
+        })).collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
+fn cycle_detail_json(cycle: &CycleDetail) -> serde_json::Value {
+    serde_json::json!({
+        "files": &cycle.files,
+        "edge_chain": cycle.edge_chain.iter().map(|edge| serde_json::json!({
+            "from_file": &edge.from_file,
+            "to_file": &edge.to_file,
+            "sources": edge.sources.iter().map(edge_source_json).collect::<Vec<_>>()
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn edge_source_json(source: &crate::core::types::ImportEdgeSource) -> serde_json::Value {
+    serde_json::json!({
+        "kind": source.kind.to_string(),
+        "symbol": &source.symbol,
+        "line": source.line,
+        "column": source.column
+    })
 }
 
 /// Build forward adjacency list from import edges. Returns (nodes, adjacency_map).
@@ -766,6 +825,113 @@ fn tarjan_sccs<'a>(
 fn detect_cycles(edges: &[ImportEdge]) -> Vec<Vec<String>> {
     let (nodes, adj) = build_adjacency_list(edges);
     tarjan_sccs(&nodes, &adj)
+}
+
+fn detect_cycle_details(edges: &[ImportEdge]) -> Vec<CycleDetail> {
+    detect_cycles(edges)
+        .into_iter()
+        .map(|files| {
+            let edge_chain = find_cycle_edge_chain(&files, edges);
+            CycleDetail { files, edge_chain }
+        })
+        .collect()
+}
+
+fn find_cycle_edge_chain(files: &[String], edges: &[ImportEdge]) -> Vec<CycleEdge> {
+    let members: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
+    let mut adj: HashMap<&str, Vec<&ImportEdge>> = HashMap::new();
+    for edge in edges {
+        if members.contains(edge.from_file.as_str()) && members.contains(edge.to_file.as_str()) {
+            adj.entry(edge.from_file.as_str()).or_default().push(edge);
+        }
+    }
+    for edge_list in adj.values_mut() {
+        edge_list.sort_unstable_by(|a, b| {
+            a.to_file
+                .cmp(&b.to_file)
+                .then_with(|| edge_source_sort_key(a).cmp(&edge_source_sort_key(b)))
+        });
+    }
+
+    let mut starts = files.to_vec();
+    starts.sort_unstable();
+    for start in starts {
+        let mut visited = HashSet::new();
+        let mut path = Vec::new();
+        if dfs_cycle_from(&start, &start, &adj, &mut visited, &mut path) {
+            return path
+                .into_iter()
+                .map(cycle_edge_from_import)
+                .collect();
+        }
+    }
+
+    fallback_cycle_edges(files, edges)
+}
+
+fn edge_source_sort_key(edge: &ImportEdge) -> String {
+    edge.sources_or_default()
+        .iter()
+        .map(|source| {
+            let symbol = source.symbol.as_deref().unwrap_or("");
+            format!("{}:{symbol}", source.kind)
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn dfs_cycle_from<'a>(
+    start: &str,
+    node: &str,
+    adj: &HashMap<&str, Vec<&'a ImportEdge>>,
+    visited: &mut HashSet<String>,
+    path: &mut Vec<&'a ImportEdge>,
+) -> bool {
+    visited.insert(node.to_string());
+    let Some(edges) = adj.get(node) else {
+        visited.remove(node);
+        return false;
+    };
+
+    for edge in edges {
+        let next = edge.to_file.as_str();
+        if next == start && !path.is_empty() {
+            path.push(*edge);
+            return true;
+        }
+        if visited.contains(next) {
+            continue;
+        }
+        path.push(*edge);
+        if dfs_cycle_from(start, next, adj, visited, path) {
+            return true;
+        }
+        path.pop();
+    }
+
+    visited.remove(node);
+    false
+}
+
+fn cycle_edge_from_import(edge: &ImportEdge) -> CycleEdge {
+    CycleEdge {
+        from_file: edge.from_file.clone(),
+        to_file: edge.to_file.clone(),
+        sources: edge.sources_or_default(),
+    }
+}
+
+fn fallback_cycle_edges(files: &[String], edges: &[ImportEdge]) -> Vec<CycleEdge> {
+    let members: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
+    edges
+        .iter()
+        .filter(|edge| {
+            members.contains(edge.from_file.as_str())
+                && members.contains(edge.to_file.as_str())
+                && edge.from_file != edge.to_file
+        })
+        .map(cycle_edge_from_import)
+        .collect()
 }
 
 /// Seed nodes for depth: entry points, or root nodes (fan-in = 0).

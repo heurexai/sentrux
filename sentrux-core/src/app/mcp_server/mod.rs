@@ -147,7 +147,7 @@ fn handle_initialize(id: &Value) -> Value {
                 "tools": {}
             },
             "serverInfo": {
-                "name": "sentrux",
+                "name": "sentrux-heurex-fork",
                 "version": env!("CARGO_PKG_VERSION")
             }
         }

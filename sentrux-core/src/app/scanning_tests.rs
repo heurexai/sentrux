@@ -37,6 +37,8 @@ fn dummy_snapshot() -> Snapshot {
         total_files: 0,
         total_lines: 0,
         total_dirs: 0,
+        include_untracked: false,
+        csharp_reference_stats: Default::default(),
         call_graph: vec![],
         import_graph: vec![],
         inherit_graph: vec![],

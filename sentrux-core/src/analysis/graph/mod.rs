@@ -6,7 +6,9 @@
 
 use super::entry_points::{compute_exec_depth, detect_entry_points};
 use super::resolver::suffix::resolve_path_imports_ref;
-use crate::core::types::{CallEdge, EntryPoint, FileNode, ImportEdge, InheritEdge};
+use crate::core::types::{
+    CSharpReferenceStats, CallEdge, EntryPoint, FileNode, ImportEdge, InheritEdge,
+};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -31,6 +33,8 @@ pub struct GraphResult {
     pub entry_points: Vec<EntryPoint>,
     /// BFS distance from entry points (0 = entry point, higher = deeper)
     pub exec_depth: HashMap<String, u32>,
+    /// Diagnostics from C# type-reference extraction.
+    pub csharp_reference_stats: CSharpReferenceStats,
 }
 
 /// Build cross-file graphs from a flat list of file references with structural analysis.
@@ -52,9 +56,12 @@ pub fn build_graphs(
     let t_maps = t0.elapsed();
 
     let mut import_edges = resolve_path_imports_ref(files, scan_root);
+    let mut csharp_reference_stats = CSharpReferenceStats::default();
     if let Some(root) = scan_root {
         import_edges.extend(crate::analysis::project_refs::build_project_reference_edges(files, root));
-        import_edges.extend(crate::analysis::csharp_refs::build_csharp_reference_edges(files, root));
+        let csharp_refs = crate::analysis::csharp_refs::build_csharp_reference_edges(files, root);
+        csharp_reference_stats = csharp_refs.stats;
+        import_edges.extend(csharp_refs.edges);
     }
     let t_imports = t0.elapsed();
 
@@ -69,7 +76,14 @@ pub fn build_graphs(
 
     log_build_graphs_timing(files.len(), &t0, t_maps, t_imports, &import_edges, &call_edges, &inherit_edges);
 
-    GraphResult { import_edges, call_edges, inherit_edges, entry_points, exec_depth }
+    GraphResult {
+        import_edges,
+        call_edges,
+        inherit_edges,
+        entry_points,
+        exec_depth,
+        csharp_reference_stats,
+    }
 }
 
 /// Build lookup maps for language, functions, and classes from file nodes.
@@ -129,23 +143,29 @@ fn build_import_target_index(import_edges: &[ImportEdge]) -> HashMap<&str, HashS
 
 /// Dedup import edges: two specifiers can resolve to the same target. [ref:daa66d13]
 fn dedup_import_edges(import_edges: &mut Vec<ImportEdge>) {
-    let mut seen: HashSet<(&str, &str)> = HashSet::with_capacity(import_edges.len());
-    // Safety: we borrow from `import_edges` elements which are not moved/dropped by `retain`
-    // until after the `seen` set is done being used. We use raw pointers to work around
-    // the borrow checker since `retain` takes `&mut self` but we need shared refs to elements.
-    // Instead, use a two-pass approach: mark indices to keep, then retain.
-    let mut keep = vec![false; import_edges.len()];
-    for (i, e) in import_edges.iter().enumerate() {
-        if seen.insert((e.from_file.as_str(), e.to_file.as_str())) {
-            keep[i] = true;
+    let mut merged = Vec::with_capacity(import_edges.len());
+    let mut index: HashMap<(String, String), usize> = HashMap::with_capacity(import_edges.len());
+
+    for edge in import_edges.drain(..) {
+        let key = (edge.from_file.clone(), edge.to_file.clone());
+        if let Some(&idx) = index.get(&key) {
+            merge_edge_sources(&mut merged[idx], edge.sources);
+        } else {
+            let idx = merged.len();
+            index.insert(key, idx);
+            merged.push(edge);
         }
     }
-    let mut idx = 0;
-    import_edges.retain(|_| {
-        let k = keep[idx];
-        idx += 1;
-        k
-    });
+
+    *import_edges = merged;
+}
+
+fn merge_edge_sources(edge: &mut ImportEdge, sources: Vec<crate::core::types::ImportEdgeSource>) {
+    for source in sources {
+        if !edge.sources.contains(&source) {
+            edge.sources.push(source);
+        }
+    }
 }
 
 /// Detect entry points across all non-directory files.

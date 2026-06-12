@@ -257,7 +257,7 @@ fn apply_move(edges: &[ImportEdge], old_path: &str, new_path: &str) -> (Vec<Impo
         .map(|e| {
             let from = if e.from_file == old_path { new_path.to_string() } else { e.from_file.clone() };
             let to = if e.to_file == old_path { new_path.to_string() } else { e.to_file.clone() };
-            ImportEdge { from_file: from, to_file: to }
+            ImportEdge::new(from, to)
         })
         .collect();
     (new_edges, format!("Move {old_path} \u{2192} {new_path}"))
@@ -265,7 +265,7 @@ fn apply_move(edges: &[ImportEdge], old_path: &str, new_path: &str) -> (Vec<Impo
 
 fn apply_add_edge(edges: &[ImportEdge], from: &str, to: &str) -> (Vec<ImportEdge>, String) {
     let mut new_edges = edges.to_vec();
-    new_edges.push(ImportEdge { from_file: from.to_string(), to_file: to.to_string() });
+    new_edges.push(ImportEdge::new(from, to));
     (new_edges, format!("Add edge {from} \u{2192} {to}"))
 }
 

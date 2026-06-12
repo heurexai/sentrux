@@ -345,6 +345,7 @@ fn apply_git_statuses(files: &mut [FileNode], root_path: &str, scan_t0: std::tim
 struct BuildContext<'a> {
     root: &'a Path,
     max_call_targets: usize,
+    include_untracked: bool,
     scan_t0: std::time::Instant,
     emit: &'a dyn Fn(&str, u8),
     on_tree_ready: Option<&'a dyn Fn(Snapshot)>,
@@ -372,6 +373,8 @@ fn build_tree_and_graphs(
         cb(Snapshot {
             root: Arc::clone(&tree),
             total_files, total_lines, total_dirs,
+            include_untracked: bctx.include_untracked,
+            csharp_reference_stats: Default::default(),
             call_graph: Vec::new(),
             import_graph: Vec::new(),
             inherit_graph: Vec::new(),
@@ -392,6 +395,8 @@ fn build_tree_and_graphs(
     ScanResult {
         snapshot: Snapshot {
             root: tree, total_files, total_lines, total_dirs,
+            include_untracked: bctx.include_untracked,
+            csharp_reference_stats: gr.csharp_reference_stats,
             call_graph: gr.call_edges,
             import_graph: gr.import_edges,
             inherit_graph: gr.inherit_edges,
@@ -457,7 +462,12 @@ pub fn scan_directory_with_options(
     apply_git_statuses(&mut files, root_path, scan_t0, &emit);
 
     let bctx = BuildContext {
-        root, max_call_targets: limits.max_call_targets, scan_t0, emit: &emit, on_tree_ready,
+        root,
+        max_call_targets: limits.max_call_targets,
+        include_untracked: options.include_untracked,
+        scan_t0,
+        emit: &emit,
+        on_tree_ready,
     };
     Ok(build_tree_and_graphs(files, &bctx))
 }

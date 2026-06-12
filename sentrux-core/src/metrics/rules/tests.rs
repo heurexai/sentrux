@@ -31,6 +31,8 @@ mod tests {
                 children: Some(files),
             }),
             total_files: 0, total_lines: 0, total_dirs: 0,
+            include_untracked: false,
+            csharp_reference_stats: Default::default(),
             call_graph: vec![], import_graph: edges,
             inherit_graph: vec![], entry_points: vec![],
             exec_depth: HashMap::new(),

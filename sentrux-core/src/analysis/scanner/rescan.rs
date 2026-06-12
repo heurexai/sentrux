@@ -68,7 +68,13 @@ pub fn rescan_changed(
     enforce_max_files(&mut files);
 
     // Build tree, emit partial snapshot, build graphs, return final result
-    build_snapshot_with_graphs(root, files, on_tree_ready, max_call_targets)
+    build_snapshot_with_graphs(
+        root,
+        files,
+        on_tree_ready,
+        max_call_targets,
+        old_snap.include_untracked,
+    )
 }
 
 /// Walk directories in `changed_rel_paths` to discover new files inside.
@@ -266,6 +272,7 @@ fn build_snapshot_with_graphs(
     files: Vec<FileNode>,
     on_tree_ready: Option<&dyn Fn(Snapshot)>,
     max_call_targets: usize,
+    include_untracked: bool,
 ) -> Result<ScanResult, AppError> {
     let total_files = files.len() as u32;
     let total_lines: u32 = files.iter().map(|f| f.lines as u64).sum::<u64>().min(u32::MAX as u64) as u32;
@@ -279,6 +286,8 @@ fn build_snapshot_with_graphs(
         cb(Snapshot {
             root: Arc::clone(&tree),
             total_files, total_lines, total_dirs,
+            include_untracked,
+            csharp_reference_stats: Default::default(),
             call_graph: Vec::new(), import_graph: Vec::new(),
             inherit_graph: Vec::new(), entry_points: Vec::new(),
             exec_depth: HashMap::new(),
@@ -293,6 +302,8 @@ fn build_snapshot_with_graphs(
         snapshot: Snapshot {
             root: tree,
             total_files, total_lines, total_dirs,
+            include_untracked,
+            csharp_reference_stats: gr.csharp_reference_stats,
             call_graph: gr.call_edges, import_graph: gr.import_edges,
             inherit_graph: gr.inherit_edges, entry_points: gr.entry_points,
             exec_depth: gr.exec_depth,

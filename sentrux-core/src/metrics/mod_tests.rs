@@ -2,7 +2,7 @@
 mod tests {
     use crate::metrics::*;
     use crate::metrics::stability::module_of;
-    use crate::core::types::{EntryPoint, ImportEdge};
+    use crate::core::types::{EntryPoint, ImportEdge, ImportEdgeKind};
     use crate::core::snapshot::Snapshot;
     use crate::core::types::{FileNode, StructuralAnalysis, FuncInfo};
     use std::collections::HashMap;
@@ -33,6 +33,11 @@ mod tests {
         let report = compute_health(&snap);
         assert_eq!(report.circular_dep_count, 1);
         assert_eq!(report.circular_dep_files[0].len(), 2);
+        assert_eq!(report.circular_dep_details[0].edge_chain.len(), 2);
+        assert_eq!(
+            report.circular_dep_details[0].edge_chain[0].sources[0].kind,
+            ImportEdgeKind::Import,
+        );
     }
 
     // ── Invariance test: intra-directory edges don't increase coupling ──

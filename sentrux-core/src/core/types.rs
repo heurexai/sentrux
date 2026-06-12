@@ -173,14 +173,147 @@ pub struct CallEdge {
     pub to_func: String,
 }
 
+/// Source/provenance category for a file-to-file dependency edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportEdgeKind {
+    /// Source import/require/use/include resolved to a scanned file.
+    Import,
+    /// Build-manifest project reference, such as .NET ProjectReference.
+    ProjectReference,
+    /// Synthetic C# source dependency inferred from a resolved type reference.
+    CsharpTypeReference,
+    /// Reserved for resolver fallbacks that intentionally emit lower-confidence edges.
+    ResolverFallback,
+    /// Reserved for dependencies inferred from call targets.
+    CallInference,
+}
+
+impl Default for ImportEdgeKind {
+    fn default() -> Self {
+        Self::Import
+    }
+}
+
+impl std::fmt::Display for ImportEdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Import => "import",
+            Self::ProjectReference => "project_reference",
+            Self::CsharpTypeReference => "csharp_type_reference",
+            Self::ResolverFallback => "resolver_fallback",
+            Self::CallInference => "call_inference",
+        };
+        f.write_str(value)
+    }
+}
+
+/// One observed source for a file-to-file dependency edge.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImportEdgeSource {
+    /// Where this dependency came from.
+    #[serde(default)]
+    pub kind: ImportEdgeKind,
+    /// Import specifier, project-reference path, type name, or inferred symbol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// 1-based source line, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// 1-based source column, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
+impl Default for ImportEdgeSource {
+    fn default() -> Self {
+        Self {
+            kind: ImportEdgeKind::Import,
+            symbol: None,
+            line: None,
+            column: None,
+        }
+    }
+}
+
+impl ImportEdgeSource {
+    pub fn new(kind: ImportEdgeKind) -> Self {
+        Self { kind, ..Self::default() }
+    }
+
+    pub fn with_symbol(
+        kind: ImportEdgeKind,
+        symbol: impl Into<String>,
+        line: Option<u32>,
+        column: Option<u32>,
+    ) -> Self {
+        Self {
+            kind,
+            symbol: Some(symbol.into()),
+            line,
+            column,
+        }
+    }
+}
+
+/// C# type-reference resolver counters.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CSharpReferenceStats {
+    /// Unique reference candidates considered across C# files.
+    pub candidates: usize,
+    /// Candidates resolved to another scanned file.
+    pub resolved_references: usize,
+    /// Candidates that did not resolve to any scanned type.
+    pub unresolved_references: usize,
+    /// Candidates that matched multiple scanned files and were not emitted.
+    pub ambiguous_references: usize,
+}
+
 /// A file-to-file import/require edge.
 /// The primary graph used for coupling, levelization, and cycle detection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportEdge {
-    /// File that contains the import statement
+    /// File that contains the dependency source.
     pub from_file: String,
-    /// File being imported
+    /// File being depended on.
     pub to_file: String,
+    /// Provenance records for this file-to-file edge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ImportEdgeSource>,
+}
+
+impl ImportEdge {
+    pub fn new(from_file: impl Into<String>, to_file: impl Into<String>) -> Self {
+        Self::with_source(from_file, to_file, ImportEdgeSource::default())
+    }
+
+    pub fn with_kind(
+        from_file: impl Into<String>,
+        to_file: impl Into<String>,
+        kind: ImportEdgeKind,
+    ) -> Self {
+        Self::with_source(from_file, to_file, ImportEdgeSource::new(kind))
+    }
+
+    pub fn with_source(
+        from_file: impl Into<String>,
+        to_file: impl Into<String>,
+        source: ImportEdgeSource,
+    ) -> Self {
+        Self {
+            from_file: from_file.into(),
+            to_file: to_file.into(),
+            sources: vec![source],
+        }
+    }
+
+    pub fn sources_or_default(&self) -> Vec<ImportEdgeSource> {
+        if self.sources.is_empty() {
+            vec![ImportEdgeSource::default()]
+        } else {
+            self.sources.clone()
+        }
+    }
 }
 
 /// An inheritance/implementation edge between two classes across files.

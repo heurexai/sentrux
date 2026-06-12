@@ -26,15 +26,17 @@ fn edition_name() -> &'static str {
     }
 }
 
+const FORK_STAMP: &str = "HeurEx fork";
+
 fn version_string() -> &'static str {
     use std::sync::OnceLock;
     static VERSION: OnceLock<String> = OnceLock::new();
     VERSION.get_or_init(|| {
         let edition = edition_name();
         let base = if edition.is_empty() {
-            env!("CARGO_PKG_VERSION").to_string()
+            format!("{} ({})", env!("CARGO_PKG_VERSION"), FORK_STAMP)
         } else {
-            format!("{} ({})", env!("CARGO_PKG_VERSION"), edition)
+            format!("{} ({}, {})", env!("CARGO_PKG_VERSION"), FORK_STAMP, edition)
         };
         if let Some(latest) = sentrux_core::app::update_check::available_update() {
             format!("{}\n  Update available: v{} → brew upgrade sentrux", base, latest)
@@ -47,7 +49,7 @@ fn version_string() -> &'static str {
 #[derive(Parser)]
 #[command(
     name = "sentrux",
-    about = "Live codebase visualization and structural quality gate",
+    about = "Live codebase visualization and structural quality gate (HeurEx fork)",
     version = version_string(),
     arg_required_else_help = false,
 )]
@@ -75,6 +77,10 @@ enum Command {
         /// Include untracked, non-ignored Git worktree files in the scan
         #[arg(long)]
         include_untracked: bool,
+
+        /// Emit machine-readable JSON diagnostics
+        #[arg(long)]
+        json: bool,
     },
 
     /// Structural regression gate — compare against a saved baseline
@@ -203,8 +209,8 @@ pub fn run() -> eframe::Result<()> {
     }
 
     match cli.command {
-        Some(Command::Check { path, include_untracked }) => {
-            std::process::exit(run_check(&path, include_untracked));
+        Some(Command::Check { path, include_untracked, json }) => {
+            std::process::exit(run_check(&path, include_untracked, json));
         }
         Some(Command::Gate { save, path }) => {
             std::process::exit(run_gate(&path, save));
@@ -426,7 +432,7 @@ fn run_analytics(action: Option<AnalyticsAction>) {
 // ---------------------------------------------------------------------------
 
 /// Run architectural rules check from CLI. Returns exit code.
-fn run_check(path: &str, include_untracked: bool) -> i32 {
+fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
     let root = std::path::Path::new(path);
     if !root.is_dir() {
         eprintln!("Error: not a directory: {path}");
@@ -464,23 +470,31 @@ fn run_check(path: &str, include_untracked: bool) -> i32 {
     let arch_report = metrics::arch::compute_arch(&result.snapshot);
     let check = metrics::rules::check_rules(&config, &health, &arch_report, &result.snapshot.import_graph);
 
-    print_check_results(&check, &health, &arch_report)
+    if json_output {
+        print_check_json(&check, &health, &result.snapshot)
+    } else {
+        print_check_results(&check, &health, &result.snapshot)
+    }
 }
 
 /// Print check results and return exit code (0 = pass, 1 = violations).
 fn print_check_results(
     check: &metrics::rules::RuleCheckResult,
     health: &metrics::HealthReport,
-    arch_report: &metrics::arch::ArchReport,
+    snapshot: &core::snapshot::Snapshot,
 ) -> i32 {
     println!("sentrux check — {} rules checked\n", check.rules_checked);
     println!("Quality: {}\n",
         (health.quality_signal * 10000.0).round() as u32);
+    println!("Scan: include_untracked={}", snapshot.include_untracked);
+    print_csharp_reference_stats(snapshot);
 
     if check.violations.is_empty() {
-        println!("✓ All rules pass");
+        println!("\n✓ All rules pass");
+        print_cycle_details(health);
         0
     } else {
+        println!();
         for v in &check.violations {
             let icon = match v.severity {
                 metrics::rules::Severity::Error => "✗",
@@ -491,9 +505,73 @@ fn print_check_results(
                 println!("    {f}");
             }
         }
+        print_cycle_details(health);
         println!("\n✗ {} violation(s) found", check.violations.len());
         1
     }
+}
+
+fn print_csharp_reference_stats(snapshot: &core::snapshot::Snapshot) {
+    let stats = &snapshot.csharp_reference_stats;
+    println!(
+        "C# references: candidates={} resolved={} unresolved={} ambiguous={} (diagnostic only)",
+        stats.candidates,
+        stats.resolved_references,
+        stats.unresolved_references,
+        stats.ambiguous_references,
+    );
+}
+
+fn print_cycle_details(health: &metrics::HealthReport) {
+    if health.circular_dep_details.is_empty() {
+        return;
+    }
+    println!("\nCycle edge chains:");
+    for (idx, cycle) in health.circular_dep_details.iter().enumerate() {
+        println!("  Cycle #{} ({} files):", idx + 1, cycle.files.len());
+        for edge in &cycle.edge_chain {
+            println!(
+                "    {} -> {}  [{}]",
+                edge.from_file,
+                edge.to_file,
+                format_edge_sources(&edge.sources),
+            );
+        }
+    }
+}
+
+fn format_edge_sources(sources: &[core::types::ImportEdgeSource]) -> String {
+    let effective_sources = if sources.is_empty() {
+        vec![core::types::ImportEdgeSource::default()]
+    } else {
+        sources.to_vec()
+    };
+    effective_sources
+        .iter()
+        .map(format_edge_source)
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_edge_source(source: &core::types::ImportEdgeSource) -> String {
+    let mut parts = vec![source.kind.to_string()];
+    if let Some(symbol) = &source.symbol {
+        parts.push(format!("symbol={symbol}"));
+    }
+    if let Some(line) = source.line {
+        let column = source.column.unwrap_or(1);
+        parts.push(format!("at={line}:{column}"));
+    }
+    parts.join(" ")
+}
+
+fn print_check_json(
+    check: &metrics::rules::RuleCheckResult,
+    health: &metrics::HealthReport,
+    snapshot: &core::snapshot::Snapshot,
+) -> i32 {
+    println!("{}", metrics::check_report_json(check, health, snapshot));
+    if check.passed { 0 } else { 1 }
 }
 
 // ---------------------------------------------------------------------------
@@ -536,7 +614,7 @@ fn run_gate(path: &str, save_mode: bool) -> i32 {
 fn gate_save(
     baseline_path: &std::path::Path,
     health: &metrics::HealthReport,
-    arch_report: &metrics::arch::ArchReport,
+    _arch_report: &metrics::arch::ArchReport,
 ) -> i32 {
     if let Some(parent) = baseline_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -863,9 +941,9 @@ fn run_gui(path: Option<String>) -> eframe::Result<()> {
     let title = {
         let edition = edition_name();
         if edition.is_empty() {
-            format!("sentrux v{}", version)
+            format!("Sentrux {FORK_STAMP} v{}", version)
         } else {
-            format!("Sentrux {} v{}", edition, version)
+            format!("Sentrux {FORK_STAMP} {} v{}", edition, version)
         }
     };
     let title = title.as_str();
@@ -929,9 +1007,9 @@ fn run_gui_glow(initial_path: Option<String>) -> eframe::Result<()> {
     let title = {
         let edition = edition_name();
         if edition.is_empty() {
-            format!("sentrux v{}", version)
+            format!("Sentrux {FORK_STAMP} v{}", version)
         } else {
-            format!("Sentrux {} v{}", edition, version)
+            format!("Sentrux {FORK_STAMP} {} v{}", edition, version)
         }
     };
     let title = title.as_str();

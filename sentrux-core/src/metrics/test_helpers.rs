@@ -12,10 +12,7 @@ use std::sync::Arc;
 
 /// Build a minimal `ImportEdge` from two path strings.
 pub fn edge(from: &str, to: &str) -> ImportEdge {
-    ImportEdge {
-        from_file: from.to_string(),
-        to_file: to.to_string(),
-    }
+    ImportEdge::new(from, to)
 }
 
 /// Build a minimal `FileNode` (non-dir, 100 lines, rust lang) from a path.
@@ -60,6 +57,8 @@ pub fn snap_with_edges(edges: Vec<ImportEdge>, files: Vec<FileNode>) -> Snapshot
         total_files: file_count,
         total_lines: 0,
         total_dirs: 0,
+        include_untracked: false,
+        csharp_reference_stats: Default::default(),
         call_graph: Vec::new(),
         import_graph: edges,
         inherit_graph: Vec::new(),

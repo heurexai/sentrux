@@ -6,7 +6,7 @@
 //! `using` directives are ambiguous, so we add those edges to the same
 //! `ImportEdge` graph used by rules, DSM, cycles, and coupling metrics.
 
-use crate::core::types::{FileNode, ImportEdge};
+use crate::core::types::{FileNode, ImportEdge, ImportEdgeKind, ImportEdgeSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -40,10 +40,17 @@ pub(crate) fn build_project_reference_edges(
             let target_key = target.to_ascii_lowercase();
             if let Some(resolved) = project_files.get(&target_key) {
                 if resolved != project {
-                    edges.push(ImportEdge {
-                        from_file: project.clone(),
-                        to_file: resolved.clone(),
-                    });
+                    let (line, column) = find_reference_location(&content, &include);
+                    edges.push(ImportEdge::with_source(
+                        project.clone(),
+                        resolved.clone(),
+                        ImportEdgeSource::with_symbol(
+                            ImportEdgeKind::ProjectReference,
+                            include,
+                            line,
+                            column,
+                        ),
+                    ));
                 }
             }
         }
@@ -56,6 +63,25 @@ pub(crate) fn build_project_reference_edges(
     });
     edges.dedup_by(|a, b| a.from_file == b.from_file && a.to_file == b.to_file);
     edges
+}
+
+fn find_reference_location(content: &str, include: &str) -> (Option<u32>, Option<u32>) {
+    let Some(pos) = content.find(include) else {
+        return (None, None);
+    };
+    let mut line = 1u32;
+    let mut line_start = 0usize;
+    for (idx, ch) in content.char_indices() {
+        if idx >= pos {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            line_start = idx + ch.len_utf8();
+        }
+    }
+    let column = content[line_start..pos].chars().count() as u32 + 1;
+    (Some(line), Some(column))
 }
 
 fn collect_project_files(files: &[&FileNode]) -> HashMap<String, String> {

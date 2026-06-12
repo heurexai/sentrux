@@ -6,6 +6,7 @@
 //! constants with literature references (McCabe 1976, Myers 1977, Martin).
 //! Key types: `HealthReport`, `GodFile`, `HotspotFile`, `ComplexFuncInfo`.
 
+use crate::core::types::ImportEdgeSource;
 use std::collections::HashMap;
 
 // ── Thresholds are now per-language, read from LanguageProfile ──
@@ -24,6 +25,8 @@ pub struct HealthReport {
     pub circular_dep_count: usize,
     /// Files involved in each circular dependency cycle
     pub circular_dep_files: Vec<Vec<String>>,
+    /// Ordered edge chain for each detected circular dependency.
+    pub circular_dep_details: Vec<CycleDetail>,
     /// Total import edges in the dependency graph
     pub total_import_edges: usize,
     /// Import edges that cross module boundaries
@@ -107,6 +110,26 @@ pub struct HealthReport {
     /// Normalized root cause scores ∈ [0,1] (for signal computation)
     pub root_cause_scores: super::root_causes::RootCauseScores,
 
+}
+
+/// One edge in a concrete circular dependency chain.
+#[derive(Debug, Clone)]
+pub struct CycleEdge {
+    /// Source file.
+    pub from_file: String,
+    /// Target file.
+    pub to_file: String,
+    /// Provenance records that caused this file-to-file edge.
+    pub sources: Vec<ImportEdgeSource>,
+}
+
+/// Detailed circular dependency diagnostic.
+#[derive(Debug, Clone)]
+pub struct CycleDetail {
+    /// Files in the SCC reported by the cycle detector.
+    pub files: Vec<String>,
+    /// Concrete ordered dependency path that closes the cycle.
+    pub edge_chain: Vec<CycleEdge>,
 }
 
 /// A file-level metric: path + numeric value (e.g., fan-out count, line count).
@@ -195,6 +218,7 @@ pub(crate) struct ModuleMetrics {
     pub(crate) avg_cohesion: Option<f64>,
     pub(crate) max_depth: u32,
     pub(crate) circular_dep_files: Vec<Vec<String>>,
+    pub(crate) circular_dep_details: Vec<CycleDetail>,
     pub(crate) circular_dep_count: usize,
 }
 

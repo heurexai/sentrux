@@ -42,6 +42,36 @@ pub(crate) fn do_scan_with_options(
     Ok((result.snapshot, health, arch_report))
 }
 
+fn csharp_reference_stats_json(snapshot: &Snapshot) -> Value {
+    json!({
+        "candidates": snapshot.csharp_reference_stats.candidates,
+        "resolved": snapshot.csharp_reference_stats.resolved_references,
+        "unresolved": snapshot.csharp_reference_stats.unresolved_references,
+        "ambiguous": snapshot.csharp_reference_stats.ambiguous_references,
+        "enforced_as_cycles": false
+    })
+}
+
+fn cycle_detail_json(cycle: &metrics::CycleDetail) -> Value {
+    json!({
+        "files": &cycle.files,
+        "edge_chain": cycle.edge_chain.iter().map(|edge| json!({
+            "from_file": &edge.from_file,
+            "to_file": &edge.to_file,
+            "sources": edge.sources.iter().map(edge_source_json).collect::<Vec<_>>()
+        })).collect::<Vec<_>>()
+    })
+}
+
+fn edge_source_json(source: &crate::core::types::ImportEdgeSource) -> Value {
+    json!({
+        "kind": source.kind.to_string(),
+        "symbol": &source.symbol,
+        "line": source.line,
+        "column": source.column
+    })
+}
+
 
 // ══════════════════════════════════════════════════════════════════
 //  SCAN
@@ -93,7 +123,8 @@ fn handle_scan(args: &Value, _tier: &Tier, state: &mut McpState) -> Result<Value
         "quality_signal": (health.quality_signal * 10000.0).round() as u32,
         "files": snapshot.total_files,
         "lines": snapshot.total_lines,
-        "import_edges": snapshot.import_graph.len()
+        "import_edges": snapshot.import_graph.len(),
+        "csharp_references": csharp_reference_stats_json(&snapshot)
     });
 
     state.scan_root = Some(root);
@@ -160,7 +191,7 @@ fn handle_health(_args: &Value, tier: &Tier, state: &mut McpState) -> Result<Val
                 "most_unstable": h.most_unstable.iter().take(10).map(|m| json!({"path": m.path, "instability": m.instability, "fan_in": m.fan_in, "fan_out": m.fan_out})).collect::<Vec<_>>(),
             },
             "acyclicity": {
-                "cycles": h.circular_dep_files.iter().collect::<Vec<_>>(),
+                "cycles": h.circular_dep_details.iter().map(cycle_detail_json).collect::<Vec<_>>(),
             },
             "depth": {
                 "max_depth": h.max_depth,
@@ -372,11 +403,14 @@ fn handle_check_rules(_args: &Value, tier: &Tier, state: &mut McpState) -> Resul
         "pass": result.passed,
         "rules_checked": result.rules_checked,
         "violation_count": result.violations.len(),
+        "include_untracked": snap.include_untracked,
+        "csharp_references": csharp_reference_stats_json(snap),
+        "cycles": h.circular_dep_details.iter().map(cycle_detail_json).collect::<Vec<_>>(),
         "violations": result.violations.iter().map(|v| json!({
-            "rule": v.rule,
+            "rule": &v.rule,
             "severity": format!("{:?}", v.severity),
-            "message": v.message,
-            "files": v.files
+            "message": &v.message,
+            "files": &v.files
         })).collect::<Vec<_>>(),
         "summary": if result.passed { "✓ All architectural rules pass" }
             else { "✗ Architectural rule violations detected" }
