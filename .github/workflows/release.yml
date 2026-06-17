@@ -18,9 +18,13 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: sentrux-darwin-arm64
-          # NOTE: x86_64-apple-darwin (Intel mac) is intentionally omitted — openssl-sys
-          # cannot cross-compile from the arm64 runner without vendored OpenSSL. Re-add with
-          # the openssl `vendored` feature when Intel-mac support is needed.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: sentrux-darwin-x86_64
+            # openssl-sys can't cross-compile from the arm64 runner against a
+            # system OpenSSL, so build OpenSSL from source via openssl-src.
+            # macos-latest runners ship the NASM/Perl toolchain openssl-src needs.
+            features: vendored-openssl
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: sentrux-linux-x86_64
@@ -100,7 +104,7 @@ jobs:
 
       - name: Build release binary (HeurEx fork)
         if: github.repository != 'sentrux/sentrux'
-        run: cargo build --release -p sentrux --target-dir target --target ${{ matrix.target }}
+        run: cargo build --release -p sentrux --target-dir target --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
 
       - name: Package binary
         shell: bash
@@ -131,6 +135,7 @@ jobs:
           name: ${{ github.repository == 'sentrux/sentrux' && github.ref_name || format('Sentrux {0} (HeurEx fork)', github.ref_name) }}
           files: |
             sentrux-darwin-arm64/sentrux-darwin-arm64
+            sentrux-darwin-x86_64/sentrux-darwin-x86_64
             sentrux-linux-x86_64/sentrux-linux-x86_64
             sentrux-linux-aarch64/sentrux-linux-aarch64
             sentrux-windows-x86_64.exe/sentrux-windows-x86_64.exe

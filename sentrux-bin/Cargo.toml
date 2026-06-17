@@ -22,6 +22,20 @@ eframe = { workspace = true }
 egui = { workspace = true }
 dirs = "6"
 
+# Optional high-level OpenSSL crate, used only to flip on the `vendored` feature
+# of the SHARED openssl-sys that git2 -> libgit2-sys -> libssh2-sys pulls in on
+# Unix targets. Scoped to cfg(unix) so it can never be activated on Windows
+# (where vendored openssl-src needs NASM+Perl and tends to break the build).
+# openssl 0.10.x depends on openssl-sys 0.9.x, which unifies with the
+# transitively resolved openssl-sys (0.9.112), so no second copy is introduced.
+[target.'cfg(unix)'.dependencies]
+openssl = { version = "0.10", optional = true }
+
 [features]
 default = []
 pro = ["sentrux-core/pro"]
+# Opt-in: build OpenSSL from source via openssl-src instead of requiring a
+# system OpenSSL. Needed for cross-compiling x86_64-apple-darwin from the
+# arm64 macOS CI runner. NOT enabled by default — native/linux/windows builds
+# keep using their existing system OpenSSL, which already works.
+vendored-openssl = ["dep:openssl", "openssl/vendored"]
