@@ -69,6 +69,19 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Enforce architectural rules defined in .sentrux/rules.toml
+    #[command(long_about = "\
+Enforce architectural rules defined in .sentrux/rules.toml.
+
+EXCLUSIONS (.sentruxignore) — HeurEx fork:
+A `.sentruxignore` file placed at the scan root excludes matching paths from the
+scan and the quality graph. It uses full gitignore syntax:
+  - directory entries        e.g.  generated/
+  - filename globs           e.g.  *.generated.cs
+  - nested globs             e.g.  **/*.designer.cs
+  - negation (re-include)    e.g.  !keep.cs
+Unlike .gitignore, .sentruxignore excludes matching files EVEN WHEN THEY ARE
+GIT-TRACKED. A missing .sentruxignore means no exclusions (it is not an error).
+This is file-based; there is no CLI flag for it.")]
     Check {
         /// Directory to check
         #[arg(default_value = ".")]

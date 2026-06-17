@@ -1,3 +1,21 @@
+<!-- ──────────────────────────────────────────────────────────────────────── -->
+<!-- HeurEx fork changes                                                       -->
+<!-- ──────────────────────────────────────────────────────────────────────── -->
+
+> ## HeurEx fork changes
+>
+> This is the **HeurEx fork** of [Sentrux](https://github.com/sentrux/sentrux). It adds the following on top of upstream:
+>
+> - **`.sentruxignore` exclusions** — a gitignore-syntax file at the scan root to exclude paths from the scan/quality-graph. Supports directory entries (`scaffold/templates/`), filename globs (`*.generated.cs`), nested globs (`**/*.foo`), and negation (`!keep.cs`). Unlike `.gitignore`, it excludes matching files **even when they are git-tracked**. *Usage:* drop a `.sentruxignore` in the directory you scan; missing file means no exclusions.
+> - **.NET project-reference dependency edges** — `<ProjectReference>` edges from `.csproj`/`.fsproj`/`.vbproj` files feed the dependency graph.
+> - **C# source type dependency edges** — type-level dependency edges inferred from C# source.
+> - **Cycle edge diagnostics** — per-cycle edge chains reported in `check` output to pinpoint the imports that form each dependency cycle.
+> - **Windows fork version resource** — an embedded Windows version resource identifying the fork build.
+>
+> Everything below is the original upstream README.
+
+<!-- ──────────────────────────────────────────────────────────────────────── -->
+
 <div align="center">
 
 <picture>

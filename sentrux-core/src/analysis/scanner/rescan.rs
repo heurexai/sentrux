@@ -7,6 +7,7 @@ use super::common::{
     ScanLimits, ScanResult, count_lines_from_bytes, detect_lang,
     should_ignore_dir, should_ignore_file, MAX_FILES,
 };
+use super::sentruxignore::SentruxIgnore;
 use super::tree::build_tree;
 use crate::core::types::AppError;
 use crate::core::snapshot::Snapshot;
@@ -35,9 +36,14 @@ pub fn rescan_changed(
     // Flatten old snapshot into a mutable file list (clone cost ~ file count, not content)
     let mut files: Vec<FileNode> = crate::core::snapshot::flatten_files(&old_snap.root);
 
+    // `.sentruxignore` matcher (empty if the file is absent). Applied to the
+    // rescan enumeration for parity with the full scan in mod.rs.
+    let ignore = SentruxIgnore::load(root);
+
     // Expand directories and classify into reparse vs deleted
-    let expanded = expand_directory_events(root, changed_rel_paths, max_file_size_bytes);
-    let (to_reparse, deleted) = classify_changed_paths(root, &expanded, max_file_size_bytes);
+    let expanded = expand_directory_events(root, changed_rel_paths, max_file_size_bytes, &ignore);
+    let (to_reparse, deleted) =
+        classify_changed_paths(root, &expanded, max_file_size_bytes, &ignore);
 
     // Remove deleted files — exact match OR prefix match for deleted directories.
     // When a directory is deleted, macOS FSEvents may only report the directory
@@ -84,12 +90,13 @@ fn expand_directory_events(
     root: &Path,
     changed_rel_paths: &[String],
     max_file_size_bytes: u64,
+    ignore: &SentruxIgnore,
 ) -> Vec<String> {
     let mut expanded: Vec<String> = Vec::new();
     for rel in changed_rel_paths {
         let abs = root.join(rel);
         if abs.exists() && abs.is_dir() {
-            expand_single_dir(root, &abs, max_file_size_bytes, &mut expanded);
+            expand_single_dir(root, &abs, max_file_size_bytes, ignore, &mut expanded);
         } else {
             expanded.push(rel.clone());
         }
@@ -106,12 +113,16 @@ fn validate_walk_entry(
     entry: &ignore::DirEntry,
     root: &Path,
     max_file_size_bytes: u64,
+    sentrux_ignore: &SentruxIgnore,
 ) -> Option<String> {
     if !entry.file_type().is_some_and(|ft| ft.is_file()) {
         return None;
     }
     let path = entry.path().to_path_buf();
     if should_ignore_file(&path) {
+        return None;
+    }
+    if sentrux_ignore.is_ignored(&path, false) {
         return None;
     }
     if let Ok(meta) = fs::metadata(&path) {
@@ -130,6 +141,7 @@ fn expand_single_dir(
     root: &Path,
     dir_abs: &Path,
     max_file_size_bytes: u64,
+    sentrux_ignore: &SentruxIgnore,
     out: &mut Vec<String>,
 ) {
     for entry in ignore::WalkBuilder::new(dir_abs)
@@ -152,7 +164,9 @@ fn expand_single_dir(
             break;
         }
         if let Ok(e) = entry {
-            if let Some(rel_path) = validate_walk_entry(&e, root, max_file_size_bytes) {
+            if let Some(rel_path) =
+                validate_walk_entry(&e, root, max_file_size_bytes, sentrux_ignore)
+            {
                 out.push(rel_path);
             }
         }
@@ -165,6 +179,7 @@ fn classify_changed_paths(
     root: &Path,
     expanded: &[String],
     max_file_size_bytes: u64,
+    ignore: &SentruxIgnore,
 ) -> (Vec<(String, PathBuf)>, HashSet<String>) {
     let mut to_reparse: Vec<(String, PathBuf)> = Vec::new();
     let mut deleted: HashSet<String> = HashSet::new();
@@ -172,6 +187,9 @@ fn classify_changed_paths(
         let abs = root.join(rel);
         if abs.exists() && abs.is_file() {
             if should_ignore_file(&abs) {
+                continue;
+            }
+            if ignore.is_ignored(&abs, false) {
                 continue;
             }
             if let Ok(meta) = fs::metadata(&abs) {

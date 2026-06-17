@@ -7,11 +7,13 @@
 pub mod common;
 mod tree;
 pub mod rescan;
+pub(crate) mod sentruxignore;
 
 use self::common::{
     MAX_FILES, ScanLimits, count_lines_from_bytes, detect_lang,
     should_ignore_dir, should_ignore_file,
 };
+use self::sentruxignore::SentruxIgnore;
 use self::tree::build_tree;
 use crate::core::types::AppError;
 use crate::core::snapshot::{ScanProgress, Snapshot};
@@ -91,6 +93,17 @@ fn process_walk_entry(
 /// what constitutes "their code." It handles .gitignore, monorepos, workspaces, and
 /// any project structure without heuristics or hardcoded ignore lists.
 fn collect_paths(root: &Path, file_size_limit: u64, options: ScanOptions) -> Vec<CollectedFile> {
+    // Assemble the candidate list from the appropriate source...
+    let candidates = collect_paths_raw(root, file_size_limit, options);
+    // ...then apply `.sentruxignore` in ONE place so it covers BOTH the
+    // `git ls-files` path (which can return git-TRACKED files that `.gitignore`
+    // cannot drop) and the filesystem-walk fallback.
+    apply_sentruxignore(root, candidates)
+}
+
+/// Assemble candidate files from `git ls-files` (preferred) or the filesystem
+/// walk fallback, before `.sentruxignore` filtering is applied.
+fn collect_paths_raw(root: &Path, file_size_limit: u64, options: ScanOptions) -> Vec<CollectedFile> {
     // Try git ls-files first — the universal correct approach
     if let Some(files) = collect_paths_git(root, file_size_limit, options) {
         if !files.is_empty() {
@@ -101,6 +114,27 @@ fn collect_paths(root: &Path, file_size_limit: u64, options: ScanOptions) -> Vec
     // Fallback: filesystem walk for non-git directories
     crate::debug_log!("[scan] not a git repo, falling back to filesystem walk");
     collect_paths_walk(root, file_size_limit)
+}
+
+/// Drop any candidate file matched by `<root>/.sentruxignore`. Missing file =>
+/// no-op. Unlike `.gitignore`, this removes git-TRACKED files too, which is the
+/// entire purpose of `.sentruxignore`.
+fn apply_sentruxignore(root: &Path, files: Vec<CollectedFile>) -> Vec<CollectedFile> {
+    let ignore = SentruxIgnore::load(root);
+    if ignore.is_empty() {
+        return files;
+    }
+    let before = files.len();
+    let kept: Vec<CollectedFile> = files
+        .into_iter()
+        // Candidates here are always files (not directories), so is_dir = false.
+        .filter(|f| !ignore.is_ignored(&f.path, false))
+        .collect();
+    let dropped = before - kept.len();
+    if dropped > 0 {
+        crate::debug_log!("[scan] .sentruxignore dropped {} file(s)", dropped);
+    }
+    kept
 }
 
 /// Collect files via `git ls-files` — returns None if not a git repo or git fails.
@@ -528,6 +562,126 @@ mod scan_options_tests {
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn unique_root(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "sentrux-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn test_limits() -> ScanLimits {
+        ScanLimits {
+            max_file_size_kb: 2048,
+            max_parse_size_kb: 512,
+            max_call_targets: 5,
+        }
+    }
+
+    /// CRITICAL behavior: `.sentruxignore` must drop git-TRACKED files matched by
+    /// a directory entry — something `.gitignore` cannot do.
+    #[test]
+    fn sentruxignore_directory_excludes_tracked_file() {
+        let root = unique_root("sig-dir");
+        let result = (|| {
+            run_git(&root, &["init"]);
+            fs::create_dir_all(root.join("generated")).unwrap();
+            fs::write(root.join("keep.rs"), "pub fn keep() {}\n").unwrap();
+            fs::write(root.join("generated/gen.rs"), "pub fn gen() {}\n").unwrap();
+            // Both files are git-TRACKED — .gitignore could not exclude them.
+            run_git(&root, &["add", "keep.rs", "generated/gen.rs"]);
+
+            let root_str = root.to_str().unwrap();
+            let before = scan_directory(root_str, None, None, &test_limits(), None).unwrap();
+            assert_eq!(
+                before.snapshot.total_files, 2,
+                "baseline must see both tracked files"
+            );
+
+            // Add .sentruxignore excluding the generated/ directory.
+            fs::write(root.join(".sentruxignore"), "generated/\n").unwrap();
+            let after = scan_directory(root_str, None, None, &test_limits(), None).unwrap();
+            assert_eq!(
+                after.snapshot.total_files, 1,
+                "tracked file under generated/ must be dropped by .sentruxignore"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    /// A filename glob pattern excludes matching tracked files.
+    #[test]
+    fn sentruxignore_filename_glob_excludes_tracked_files() {
+        let root = unique_root("sig-glob");
+        let result = (|| {
+            run_git(&root, &["init"]);
+            fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+            fs::write(root.join("a.generated.rs"), "pub fn g() {}\n").unwrap();
+            run_git(&root, &["add", "a.rs", "a.generated.rs"]);
+            fs::write(root.join(".sentruxignore"), "*.generated.rs\n").unwrap();
+
+            let root_str = root.to_str().unwrap();
+            let after = scan_directory(root_str, None, None, &test_limits(), None).unwrap();
+            assert_eq!(
+                after.snapshot.total_files, 1,
+                "*.generated.rs must be excluded, a.rs must remain"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    /// Negation (`!keep`) re-includes a path excluded by a broader pattern.
+    #[test]
+    fn sentruxignore_negation_reincludes_tracked_file() {
+        let root = unique_root("sig-neg");
+        let result = (|| {
+            run_git(&root, &["init"]);
+            fs::write(root.join("drop.rs"), "pub fn drop_me() {}\n").unwrap();
+            fs::write(root.join("keep.rs"), "pub fn keep() {}\n").unwrap();
+            run_git(&root, &["add", "drop.rs", "keep.rs"]);
+            fs::write(root.join(".sentruxignore"), "*.rs\n!keep.rs\n").unwrap();
+
+            let root_str = root.to_str().unwrap();
+            let after = scan_directory(root_str, None, None, &test_limits(), None).unwrap();
+            assert_eq!(
+                after.snapshot.total_files, 1,
+                "only keep.rs should remain after negation"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    /// Absence of `.sentruxignore` changes nothing.
+    #[test]
+    fn sentruxignore_absent_changes_nothing() {
+        let root = unique_root("sig-absent");
+        let result = (|| {
+            run_git(&root, &["init"]);
+            fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+            fs::write(root.join("b.rs"), "pub fn b() {}\n").unwrap();
+            run_git(&root, &["add", "a.rs", "b.rs"]);
+
+            let root_str = root.to_str().unwrap();
+            let after = scan_directory(root_str, None, None, &test_limits(), None).unwrap();
+            assert_eq!(
+                after.snapshot.total_files, 2,
+                "no .sentruxignore means no exclusions"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
     }
 }
 
