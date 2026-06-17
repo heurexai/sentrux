@@ -3,6 +3,8 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch: {}   # manual trigger — fork auto-triggers are disabled by GitHub until
+                          # enabled in the Actions UI; dispatch on a v* tag to build that release.
 
 permissions:
   contents: write
