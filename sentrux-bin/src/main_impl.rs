@@ -26,7 +26,7 @@ fn edition_name() -> &'static str {
     }
 }
 
-const FORK_STAMP: &str = "HeurEx fork";
+const FORK_STAMP: &str = "Heurex fork";
 
 fn version_string() -> &'static str {
     use std::sync::OnceLock;
@@ -49,7 +49,7 @@ fn version_string() -> &'static str {
 #[derive(Parser)]
 #[command(
     name = "sentrux",
-    about = "Live codebase visualization and structural quality gate (HeurEx fork)",
+    about = "Live codebase visualization and structural quality gate (Heurex fork)",
     version = version_string(),
     arg_required_else_help = false,
 )]
@@ -72,7 +72,7 @@ enum Command {
     #[command(long_about = "\
 Enforce architectural rules defined in .sentrux/rules.toml.
 
-EXCLUSIONS (.sentruxignore) — HeurEx fork:
+EXCLUSIONS (.sentruxignore) — Heurex fork:
 A `.sentruxignore` file placed at the scan root excludes matching paths from the
 scan and the quality graph. It uses full gitignore syntax:
   - directory entries        e.g.  generated/

@@ -1,10 +1,10 @@
 <!-- ──────────────────────────────────────────────────────────────────────── -->
-<!-- HeurEx fork changes                                                       -->
+<!-- Heurex fork changes                                                       -->
 <!-- ──────────────────────────────────────────────────────────────────────── -->
 
-> ## HeurEx fork changes
+> ## Heurex fork changes
 >
-> This is the **HeurEx fork** of [Sentrux](https://github.com/sentrux/sentrux). It adds the following on top of upstream:
+> This is the **Heurex fork** of [Sentrux](https://github.com/sentrux/sentrux). It adds the following on top of upstream:
 >
 > - **`.sentruxignore` exclusions** — a gitignore-syntax file at the scan root to exclude paths from the scan/quality-graph. Supports directory entries (`scaffold/templates/`), filename globs (`*.generated.cs`), nested globs (`**/*.foo`), and negation (`!keep.cs`). Unlike `.gitignore`, it excludes matching files **even when they are git-tracked**. *Usage:* drop a `.sentruxignore` in the directory you scan; missing file means no exclusions.
 > - **.NET project-reference dependency edges** — `<ProjectReference>` edges from `.csproj`/`.fsproj`/`.vbproj` files feed the dependency graph.

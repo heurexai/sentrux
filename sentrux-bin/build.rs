@@ -2,8 +2,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-const FORK_STAMP: &str = "HeurEx fork";
-const COMPANY_NAME: &str = "HeurEx";
+const FORK_STAMP: &str = "Heurex fork";
+const COMPANY_NAME: &str = "Heurex";
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -68,14 +68,14 @@ fn build_version_info(version: &str, parts: VersionParts) -> Vec<u8> {
     let file_version = format!("{} ({})", parts.dotted(), FORK_STAMP);
     let product_version = format!("{version}-heurex-fork");
     add_string(&mut buf, "CompanyName", COMPANY_NAME);
-    add_string(&mut buf, "FileDescription", "Sentrux HeurEx fork");
+    add_string(&mut buf, "FileDescription", "Sentrux Heurex fork");
     add_string(&mut buf, "FileVersion", &file_version);
     add_string(&mut buf, "InternalName", "sentrux");
     add_string(&mut buf, "OriginalFilename", "sentrux.exe");
-    add_string(&mut buf, "ProductName", "Sentrux HeurEx fork");
+    add_string(&mut buf, "ProductName", "Sentrux Heurex fork");
     add_string(&mut buf, "ProductVersion", &product_version);
     add_string(&mut buf, "PrivateBuild", FORK_STAMP);
-    add_string(&mut buf, "Comments", "HeurEx fork build. Not the official upstream Sentrux release.");
+    add_string(&mut buf, "Comments", "Heurex fork build. Not the official upstream Sentrux release.");
     end_block(&mut buf, table);
     end_block(&mut buf, strings);
 
