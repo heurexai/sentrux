@@ -120,6 +120,106 @@ pub enum Severity {
     Warning,
 }
 
+fn format_coupling_edge(edge: &crate::metrics::CouplingEdgeDetail) -> String {
+    format!(
+        "{} -> {} ({} -> {})",
+        edge.from_file, edge.to_file, edge.from_module, edge.to_module
+    )
+}
+
+fn format_cycle_detail(cycle: &crate::metrics::CycleDetail) -> String {
+    if cycle.edge_chain.is_empty() {
+        return cycle.files.join(" -> ");
+    }
+    cycle
+        .edge_chain
+        .iter()
+        .map(|edge| format!("{} -> {}", edge.from_file, edge.to_file))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn format_func(metric: &crate::metrics::FuncMetric, label: &str) -> String {
+    format!("{}:{} ({}={})", metric.file, metric.func, label, metric.value)
+}
+
+fn root_cause_files(name: &str, health: &HealthReport) -> Vec<String> {
+    match name {
+        "modularity" => health
+            .coupling_edges
+            .iter()
+            .map(format_coupling_edge)
+            .collect(),
+        "acyclicity" => health
+            .circular_dep_details
+            .iter()
+            .map(format_cycle_detail)
+            .collect(),
+        "depth" => health
+            .deepest_files
+            .iter()
+            .map(|file| format!("{} (depth={})", file.path, file.value))
+            .collect(),
+        "equality" => {
+            let mut files = health
+                .god_file_details
+                .iter()
+                .map(|file| {
+                    format!(
+                        "{} (god-file score={:.2}, fan-out={})",
+                        file.path, file.score, file.fan_out
+                    )
+                })
+                .collect::<Vec<_>>();
+            files.extend(
+                health
+                    .complex_functions
+                    .iter()
+                    .map(|func| format_func(func, "cc")),
+            );
+            files.extend(
+                health
+                    .long_files
+                    .iter()
+                    .map(|file| format!("{} ({} lines)", file.path, file.value)),
+            );
+            files
+        }
+        "redundancy" => {
+            let mut files = health
+                .dead_functions
+                .iter()
+                .map(|func| format_func(func, "lines"))
+                .collect::<Vec<_>>();
+            for group in &health.duplicate_groups {
+                files.extend(group.instances.iter().map(|(file, func, lines)| {
+                    format!("{file}:{func} (duplicate, {lines} lines)")
+                }));
+            }
+            files
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn quality_context_files(health: &HealthReport) -> Vec<String> {
+    let mut scores = [
+        ("modularity", health.root_cause_scores.modularity),
+        ("acyclicity", health.root_cause_scores.acyclicity),
+        ("depth", health.root_cause_scores.depth),
+        ("equality", health.root_cause_scores.equality),
+        ("redundancy", health.root_cause_scores.redundancy),
+    ];
+    scores.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut files = Vec::new();
+    for (name, score) in scores.into_iter().take(2) {
+        files.push(format!("{name} score={score:.4}"));
+        files.extend(root_cause_files(name, health));
+    }
+    files
+}
+
 /// Check minimum quality signal.
 pub fn check_min_quality(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
     let min_quality = c.min_quality?;
@@ -128,7 +228,7 @@ pub fn check_min_quality(c: &Constraints, health: &HealthReport) -> Option<RuleV
             rule: "min_quality".into(),
             severity: Severity::Error,
             message: format!("Quality signal {:.2} below minimum required {:.2}", health.quality_signal, min_quality),
-            files: vec![],
+            files: quality_context_files(health),
         })
     } else {
         None
@@ -143,7 +243,7 @@ pub fn check_max_coupling(c: &Constraints, health: &HealthReport) -> Option<Rule
             rule: "max_coupling_score".into(),
             severity: Severity::Error,
             message: format!("Coupling score {:.2} exceeds maximum allowed {:.2}", health.coupling_score, max_coupling),
-            files: vec![],
+            files: health.coupling_edges.iter().map(format_coupling_edge).collect(),
         })
     } else {
         None
@@ -158,7 +258,11 @@ pub fn check_max_cycles(c: &Constraints, health: &HealthReport) -> Option<RuleVi
             rule: "max_cycles".into(),
             severity: Severity::Error,
             message: format!("Found {} circular dependencies, maximum allowed is {}", health.circular_dep_count, max_cycles),
-            files: health.circular_dep_files.iter().flatten().cloned().collect(),
+            files: if health.circular_dep_details.is_empty() {
+                health.circular_dep_files.iter().flatten().cloned().collect()
+            } else {
+                health.circular_dep_details.iter().map(format_cycle_detail).collect()
+            },
         })
     } else {
         None
@@ -229,7 +333,13 @@ pub fn check_no_god_files(c: &Constraints, health: &HealthReport) -> Option<Rule
             rule: "no_god_files".into(),
             severity: Severity::Error,
             message: format!("{} god file(s) found (fan-out > 15)", health.god_files.len()),
-            files: health.god_files.iter().map(|f| format!("{} (fan-out={})", f.path, f.value)).collect(),
+            files: if health.god_file_details.is_empty() {
+                health.god_files.iter().map(|f| format!("{} (fan-out={})", f.path, f.value)).collect()
+            } else {
+                health.god_file_details.iter().map(|f| {
+                    format!("{} (score={:.2}, threshold={}, fan-out={})", f.path, f.score, f.threshold, f.fan_out)
+                }).collect()
+            },
         })
     } else {
         None
@@ -238,14 +348,19 @@ pub fn check_no_god_files(c: &Constraints, health: &HealthReport) -> Option<Rule
 
 // ── Root cause gates ──
 
-fn check_root_cause(name: &str, score: f64, min: Option<f64>) -> Option<RuleViolation> {
+fn check_root_cause(
+    name: &str,
+    score: f64,
+    min: Option<f64>,
+    health: &HealthReport,
+) -> Option<RuleViolation> {
     let min = min?;
     if score < min {
         Some(RuleViolation {
             rule: format!("min_{}", name),
             severity: Severity::Error,
             message: format!("{} score {:.4} below minimum required {:.4}", name, score, min),
-            files: vec![],
+            files: root_cause_files(name, health),
         })
     } else {
         None
@@ -254,27 +369,27 @@ fn check_root_cause(name: &str, score: f64, min: Option<f64>) -> Option<RuleViol
 
 /// Check minimum modularity score.
 pub fn check_min_modularity(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
-    check_root_cause("modularity", health.root_cause_scores.modularity, c.min_modularity)
+    check_root_cause("modularity", health.root_cause_scores.modularity, c.min_modularity, health)
 }
 
 /// Check minimum acyclicity score.
 pub fn check_min_acyclicity(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
-    check_root_cause("acyclicity", health.root_cause_scores.acyclicity, c.min_acyclicity)
+    check_root_cause("acyclicity", health.root_cause_scores.acyclicity, c.min_acyclicity, health)
 }
 
 /// Check minimum depth score.
 pub fn check_min_depth(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
-    check_root_cause("depth", health.root_cause_scores.depth, c.min_depth)
+    check_root_cause("depth", health.root_cause_scores.depth, c.min_depth, health)
 }
 
 /// Check minimum equality score.
 pub fn check_min_equality(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
-    check_root_cause("equality", health.root_cause_scores.equality, c.min_equality)
+    check_root_cause("equality", health.root_cause_scores.equality, c.min_equality, health)
 }
 
 /// Check minimum redundancy score.
 pub fn check_min_redundancy(c: &Constraints, health: &HealthReport) -> Option<RuleViolation> {
-    check_root_cause("redundancy", health.root_cause_scores.redundancy, c.min_redundancy)
+    check_root_cause("redundancy", health.root_cause_scores.redundancy, c.min_redundancy, health)
 }
 
 /// Check maximum upward dependency violations.
@@ -285,7 +400,7 @@ pub fn check_max_upward(c: &Constraints, arch: &ArchReport) -> Option<RuleViolat
             rule: "max_upward_violations".into(),
             severity: Severity::Error,
             message: format!("{} upward dependency violations, maximum allowed is {}", arch.upward_violations.len(), max_upward),
-            files: arch.upward_violations.iter().take(5)
+            files: arch.upward_violations.iter()
                 .map(|v| format!("{} (L{}) \u{2192} {} (L{})", v.from_file, v.from_level, v.to_file, v.to_level))
                 .collect(),
         })

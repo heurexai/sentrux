@@ -10,7 +10,20 @@
 > - **.NET project-reference dependency edges** — `<ProjectReference>` edges from `.csproj`/`.fsproj`/`.vbproj` files feed the dependency graph.
 > - **C# source type dependency edges** — type-level dependency edges inferred from C# source.
 > - **Cycle edge diagnostics** — per-cycle edge chains reported in `check` output to pinpoint the imports that form each dependency cycle.
-> - **Windows fork version resource** — an embedded Windows version resource identifying the fork build.
+> - **Actionable gate/check JSON** — `sentrux check --json` reports current structural metrics with offender lists, and `sentrux gate --json` reports baseline/current deltas with added, removed, persisting, and changed offenders.
+> - **God-file root cause reporting** — gate failures list the exact added/removed/existing god files, their language, reason, score/threshold, and contributing dimensions such as LOC, imports, fan-in, fan-out, call edges, centrality, coupling, and complexity when available.
+> - **Actionable metric offenders** — cycles include exact edge chains and edge kinds; coupling, depth, complex/long/large files, duplicate code, and dead-code reports expose the files or functions behind the counter.
+> - **Agent-focused help** — `sentrux --help`, `sentrux check --help`, and `sentrux gate --help` now describe the commands and JSON paths agents should use to debug failed assessments.
+> - **Windows fork version resource** — the Windows executable embeds version metadata identifying the fork build. This release is `0.5.11`; `ProductVersion` is stamped as `0.5.11-heurex-fork`.
+>
+> Agent RCA shortcut:
+>
+> ```bash
+> sentrux gate --json <repo>
+> sentrux check --json --include-untracked <repo>
+> ```
+>
+> See [docs/heurex-fork.md](docs/heurex-fork.md) for the fork release notes, JSON fields, and release workflow.
 >
 > Everything below is the original upstream README.
 

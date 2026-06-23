@@ -31,6 +31,8 @@ pub struct HealthReport {
     pub total_import_edges: usize,
     /// Import edges that cross module boundaries
     pub cross_module_edges: usize,
+    /// Highest-impact cross-module dependency edges that contribute to coupling.
+    pub coupling_edges: Vec<CouplingEdgeDetail>,
 
     // ── Entropy & structure metrics ──
     /// Normalized Shannon entropy of cross-module edge distribution (0.0-1.0)
@@ -42,10 +44,14 @@ pub struct HealthReport {
     pub avg_cohesion: Option<f64>,
     /// Maximum dependency depth in the DAG
     pub max_depth: u32,
+    /// Seed files with the maximum dependency depth.
+    pub deepest_files: Vec<FileMetric>,
 
     // ── Per-file metrics ──
     /// Files with fan-out exceeding threshold (god files)
     pub god_files: Vec<FileMetric>,
+    /// Detailed god-file diagnostics with threshold and contributing dimensions.
+    pub god_file_details: Vec<GodFileDetail>,
     /// Files with high fan-in that are also unstable (hotspots)
     pub hotspot_files: Vec<FileMetric>,
     /// Top 10 most unstable files by Martin's instability metric
@@ -109,11 +115,10 @@ pub struct HealthReport {
     pub root_cause_raw: super::root_causes::RootCauseRaw,
     /// Normalized root cause scores ∈ [0,1] (for signal computation)
     pub root_cause_scores: super::root_causes::RootCauseScores,
-
 }
 
 /// One edge in a concrete circular dependency chain.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CycleEdge {
     /// Source file.
     pub from_file: String,
@@ -124,7 +129,7 @@ pub struct CycleEdge {
 }
 
 /// Detailed circular dependency diagnostic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CycleDetail {
     /// Files in the SCC reported by the cycle detector.
     pub files: Vec<String>,
@@ -133,7 +138,7 @@ pub struct CycleDetail {
 }
 
 /// A file-level metric: path + numeric value (e.g., fan-out count, line count).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileMetric {
     /// Relative file path
     pub path: String,
@@ -141,8 +146,68 @@ pub struct FileMetric {
     pub value: usize,
 }
 
+/// A dependency edge that contributes to cross-module coupling.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CouplingEdgeDetail {
+    /// Rank within the current coupling offender list.
+    pub rank: usize,
+    /// Source file containing the dependency.
+    pub from_file: String,
+    /// Target file being depended on.
+    pub to_file: String,
+    /// Source module bucket.
+    pub from_module: String,
+    /// Target module bucket.
+    pub to_module: String,
+    /// Whether the target module was considered stable and excluded from the score.
+    pub target_stable: bool,
+    /// Stable machine-readable classification key.
+    pub classification: String,
+    /// Human-readable reason this edge is shown.
+    pub reason: String,
+    /// Provenance records that caused this dependency edge.
+    pub sources: Vec<ImportEdgeSource>,
+}
+
+/// Detailed diagnostics for a file classified as a god file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GodFileDetail {
+    /// Rank within the current god-file list (1 = highest score/fan-out).
+    pub rank: usize,
+    /// Relative file path.
+    pub path: String,
+    /// Detected source language.
+    pub language: String,
+    /// Human-readable reason for the classification.
+    pub reason: String,
+    /// Stable machine-readable classification key.
+    pub classification: String,
+    /// Ratio of fan-out to the language threshold.
+    pub score: f64,
+    /// Per-language fan-out threshold that was exceeded.
+    pub threshold: usize,
+    /// Lines of code in the file.
+    pub loc: usize,
+    /// Direct import/project/type-reference edges originating from the file.
+    pub imports: usize,
+    /// Incoming dependency count.
+    pub fan_in: usize,
+    /// Outgoing dependency count used for god-file detection.
+    pub fan_out: usize,
+    /// Call edges originating from the file.
+    pub call_edges: usize,
+    /// Degree centrality based on incoming plus outgoing dependency count.
+    pub degree_centrality: f64,
+    /// Martin instability, Ce / (Ca + Ce).
+    pub instability: f64,
+    /// Maximum cyclomatic complexity found in the file.
+    pub max_complexity: Option<u32>,
+    /// Number of functions found in the file.
+    pub function_count: usize,
+}
+
 /// A function-level metric: file + function name + numeric value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FuncMetric {
     /// File containing the function
     pub file: String,
@@ -156,7 +221,7 @@ pub struct FuncMetric {
 /// Ce = efferent coupling (fan-out), Ca = afferent coupling (fan-in).
 /// 0.0 = maximally stable (only depended on, never depends out).
 /// 1.0 = maximally unstable (depends on everything, nothing depends on it).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InstabilityMetric {
     /// File path
     pub path: String,
@@ -169,7 +234,7 @@ pub struct InstabilityMetric {
 }
 
 /// A group of functions with identical body hashes (copy-paste duplicates).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DuplicateGroup {
     /// Body hash shared by all instances in this group
     #[allow(dead_code)]
@@ -186,6 +251,7 @@ pub(crate) struct FileMetrics {
     #[allow(dead_code)]
     pub(crate) fan_in: HashMap<String, usize>,
     pub(crate) god_files: Vec<FileMetric>,
+    pub(crate) god_file_details: Vec<GodFileDetail>,
     pub(crate) hotspot_files: Vec<FileMetric>,
     pub(crate) most_unstable: Vec<InstabilityMetric>,
     pub(crate) complex_functions: Vec<FuncMetric>,
@@ -212,11 +278,13 @@ pub(crate) struct FileMetrics {
 pub(crate) struct ModuleMetrics {
     pub(crate) coupling_score: f64,
     pub(crate) cross_module_edges: usize,
+    pub(crate) coupling_edges: Vec<CouplingEdgeDetail>,
     pub(crate) entropy: f64,
     pub(crate) entropy_bits: f64,
     pub(crate) entropy_num_pairs: usize,
     pub(crate) avg_cohesion: Option<f64>,
     pub(crate) max_depth: u32,
+    pub(crate) deepest_files: Vec<FileMetric>,
     pub(crate) circular_dep_files: Vec<Vec<String>>,
     pub(crate) circular_dep_details: Vec<CycleDetail>,
     pub(crate) circular_dep_count: usize,
@@ -239,8 +307,16 @@ pub(crate) fn is_mod_declaration_edge(edge: &crate::core::types::ImportEdge) -> 
     if !MOD_DECL_FILES.contains(from_name) {
         return false;
     }
-    let from_dir = edge.from_file.rfind('/').map(|i| &edge.from_file[..i]).unwrap_or("");
-    let to_dir = edge.to_file.rfind('/').map(|i| &edge.to_file[..i]).unwrap_or("");
+    let from_dir = edge
+        .from_file
+        .rfind('/')
+        .map(|i| &edge.from_file[..i])
+        .unwrap_or("");
+    let to_dir = edge
+        .to_file
+        .rfind('/')
+        .map(|i| &edge.to_file[..i])
+        .unwrap_or("");
     // Same directory: "src/app/mod.rs" → "src/app/state.rs"
     // Guard: both dirs must be non-empty to prevent false positives when files are at root level
     // (e.g., "lib.rs" → "foo.rs" both have from_dir="" and to_dir="", but this is NOT a mod declaration)
@@ -265,4 +341,3 @@ pub(crate) fn is_mod_declaration_edge(edge: &crate::core::types::ImportEdge) -> 
     }
     false
 }
-

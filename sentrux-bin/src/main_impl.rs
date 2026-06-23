@@ -22,7 +22,7 @@ fn edition_name() -> &'static str {
     if tier >= sentrux_core::license::Tier::Pro {
         "Pro"
     } else {
-        ""            // Don't show "Free" or "Community" — just "sentrux"
+        "" // Don't show "Free" or "Community" — just "sentrux"
     }
 }
 
@@ -36,10 +36,18 @@ fn version_string() -> &'static str {
         let base = if edition.is_empty() {
             format!("{} ({})", env!("CARGO_PKG_VERSION"), FORK_STAMP)
         } else {
-            format!("{} ({}, {})", env!("CARGO_PKG_VERSION"), FORK_STAMP, edition)
+            format!(
+                "{} ({}, {})",
+                env!("CARGO_PKG_VERSION"),
+                FORK_STAMP,
+                edition
+            )
         };
         if let Some(latest) = sentrux_core::app::update_check::available_update() {
-            format!("{}\n  Update available: v{} → brew upgrade sentrux", base, latest)
+            format!(
+                "{}\n  Update available: v{} → brew upgrade sentrux",
+                base, latest
+            )
         } else {
             base
         }
@@ -50,6 +58,53 @@ fn version_string() -> &'static str {
 #[command(
     name = "sentrux",
     about = "Live codebase visualization and structural quality gate (Heurex fork)",
+    long_about = "\
+Live codebase visualization and structural quality gate (Heurex fork).
+
+Agent quick start:
+  Current structural assessment:
+    sentrux check --json --include-untracked <repo>
+
+  Baseline regression / gate failure:
+    sentrux gate --json <repo>
+
+  Create or refresh a baseline intentionally:
+    sentrux gate --save --json <repo>
+
+Important JSON paths for agents:
+  check --json:
+    pass
+    scan.include_untracked
+    violations[]
+    metrics.godFiles.files[]
+    metrics.coupling.problemEdges[]
+    metrics.cycles.cycles[]
+    metrics.complexFunctions.functions[]
+    metrics.depth.deepestFiles[]
+
+  gate --json:
+    passed
+    degradations[]
+    hardMetricFailureDespiteQualityImprovement
+    metrics.godFiles.addedGodFiles[]
+    metrics.coupling.offenders.added[]
+    metrics.cycles.cycles.added[]
+    metrics.complexFunctions.functions.added[]
+
+Exit codes:
+  0  no blocking assessment or gate failure
+  1  rules failed, structural degradation detected, scan failed, or baseline missing
+  2  invalid command line usage
+
+Config and state files:
+  .sentrux/rules.toml       rules for `check`
+  .sentruxignore            scan exclusions, including tracked files
+  .sentrux/baseline.json    baseline for `gate`
+
+Tip: when debugging why a gate failed, prefer `sentrux gate --json <repo>` first.
+If the baseline is old and lacks offender details, run `sentrux check --json
+--include-untracked <repo>` to inspect the current offenders, then refresh the
+baseline only after the operator decides the new structure is acceptable.",
     version = version_string(),
     arg_required_else_help = false,
 )]
@@ -71,6 +126,44 @@ enum Command {
     /// Enforce architectural rules defined in .sentrux/rules.toml
     #[command(long_about = "\
 Enforce architectural rules defined in .sentrux/rules.toml.
+
+Agent command:
+  sentrux check --json --include-untracked <repo>
+
+Use `check` when the agent needs the current assessment, independent of any
+saved baseline. This is the best command for answering: what files or edges are
+currently causing Sentrux to fail?
+
+Important JSON paths:
+  pass
+  rules_checked
+  scan.include_untracked
+  csharp_references.unresolved
+  violations[]
+  metrics.quality.rootCauses
+  metrics.godFiles.files[]
+  metrics.coupling.problemEdges[]
+  metrics.cycles.cycles[]
+  metrics.depth.deepestFiles[]
+  metrics.complexFunctions.functions[]
+  metrics.longFunctions.functions[]
+  metrics.largeFiles.files[]
+  metrics.duplicates.groups[]
+  metrics.deadFunctions.functions[]
+
+Typical debug flow:
+  1. Run with `--json --include-untracked`.
+  2. If `pass` is false, inspect `violations[]` first.
+  3. For god-file failures, inspect `metrics.godFiles.files[]`.
+  4. For cycle failures, inspect `metrics.cycles.cycles[].edge_chain`.
+  5. For coupling failures, inspect `metrics.coupling.problemEdges[]`.
+  6. For quality/root-cause failures, inspect `metrics.quality.rootCauses`
+     plus the matching offender lists above.
+
+Exit code:
+  0  all checked rules passed
+  1  one or more rules failed, or scanning failed
+  2  invalid command line usage
 
 EXCLUSIONS (.sentruxignore) — Heurex fork:
 A `.sentruxignore` file placed at the scan root excludes matching paths from the
@@ -97,10 +190,59 @@ This is file-based; there is no CLI flag for it.")]
     },
 
     /// Structural regression gate — compare against a saved baseline
+    #[command(long_about = "\
+Structural regression gate: compare the current scan against
+.sentrux/baseline.json.
+
+Agent command for a gate failure:
+  sentrux gate --json <repo>
+
+Use `gate` when the agent needs to explain a regression relative to the saved
+baseline. It is the best command for answering: what changed since the baseline
+that made Sentrux fail?
+
+Important JSON paths:
+  passed
+  quality.before / quality.after / quality.delta
+  degradations[]
+  hardMetricFailureDespiteQualityImprovement
+  metrics.godFiles.addedGodFiles[]
+  metrics.godFiles.removedGodFiles[]
+  metrics.godFiles.persistingGodFiles[]
+  metrics.godFiles.changedRankOrScoreGodFiles[]
+  metrics.coupling.offenders.added[]
+  metrics.coupling.offenders.removed[]
+  metrics.coupling.offenders.current[]
+  metrics.cycles.cycles.added[]
+  metrics.cycles.cycles.current[]
+  metrics.complexFunctions.functions.added[]
+  metrics.complexFunctions.functions.current[]
+
+Typical debug flow:
+  1. Run `sentrux gate --json <repo>`.
+  2. Inspect `degradations[]` to identify the failing hard metric.
+  3. Inspect the matching `added` offender list for the root cause.
+  4. If `baselineDetailsAvailable` is false for a metric, the baseline was
+     created by an older Sentrux that only stored aggregate counts. In that
+     case run `sentrux check --json --include-untracked <repo>` to inspect the
+     current offenders, then refresh the baseline only after the operator
+     accepts the new structure.
+
+Create or refresh a baseline intentionally:
+  sentrux gate --save --json <repo>
+
+Exit code:
+  0  current structure did not regress against the baseline
+  1  degradation detected, baseline missing/unreadable, or scan failed
+  2  invalid command line usage")]
     Gate {
         /// Save current metrics as the new baseline
         #[arg(long)]
         save: bool,
+
+        /// Emit machine-readable JSON diagnostics
+        #[arg(long)]
+        json: bool,
 
         /// Directory to gate
         #[arg(default_value = ".")]
@@ -222,11 +364,15 @@ pub fn run() -> eframe::Result<()> {
     }
 
     match cli.command {
-        Some(Command::Check { path, include_untracked, json }) => {
+        Some(Command::Check {
+            path,
+            include_untracked,
+            json,
+        }) => {
             std::process::exit(run_check(&path, include_untracked, json));
         }
-        Some(Command::Gate { save, path }) => {
-            std::process::exit(run_gate(&path, save));
+        Some(Command::Gate { save, json, path }) => {
+            std::process::exit(run_gate(&path, save, json));
         }
         Some(Command::Mcp) => {
             app::mcp_server::run_mcp_server(None);
@@ -248,12 +394,8 @@ pub fn run() -> eframe::Result<()> {
             run_pro(action);
             Ok(())
         }
-        Some(Command::Scan { path }) => {
-            run_gui(path)
-        }
-        None => {
-            run_gui(cli.path)
-        }
+        Some(Command::Scan { path }) => run_gui(path),
+        None => run_gui(cli.path),
     }
 }
 
@@ -286,11 +428,19 @@ fn run_login() {
 
 fn open_url(url: &str) {
     #[cfg(target_os = "macos")]
-    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
     #[cfg(target_os = "linux")]
-    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
     #[cfg(target_os = "windows")]
-    { let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn(); }
+    {
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", url])
+            .spawn();
+    }
 }
 
 fn run_pro(action: ProAction) {
@@ -325,7 +475,10 @@ fn pro_activate(key_input: &str) {
             // Save to disk
             let dir = match dirs::home_dir() {
                 Some(h) => h.join(".sentrux"),
-                None => { eprintln!("Cannot find home directory"); return; }
+                None => {
+                    eprintln!("Cannot find home directory");
+                    return;
+                }
             };
             let _ = std::fs::create_dir_all(&dir);
             let key_path = dir.join("license.key");
@@ -367,9 +520,13 @@ fn pro_status() {
             println!("License: not found");
         }
 
-        let dylib_name = if cfg!(target_os = "macos") { "pro.dylib" }
-            else if cfg!(target_os = "windows") { "pro.dll" }
-            else { "pro.so" };
+        let dylib_name = if cfg!(target_os = "macos") {
+            "pro.dylib"
+        } else if cfg!(target_os = "windows") {
+            "pro.dll"
+        } else {
+            "pro.so"
+        };
         let dylib_path = home.join(".sentrux").join("pro").join(dylib_name);
         if dylib_path.exists() {
             println!("Plugin:  {} (installed)", dylib_path.display());
@@ -467,7 +624,9 @@ fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
         eprintln!("Scanning {path}...");
     }
     let result = match analysis::scanner::scan_directory_with_options(
-        path, None, None,
+        path,
+        None,
+        None,
         &cli_scan_limits(),
         None,
         analysis::scanner::ScanOptions { include_untracked },
@@ -481,7 +640,12 @@ fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
 
     let health = metrics::compute_health(&result.snapshot);
     let arch_report = metrics::arch::compute_arch(&result.snapshot);
-    let check = metrics::rules::check_rules(&config, &health, &arch_report, &result.snapshot.import_graph);
+    let check = metrics::rules::check_rules(
+        &config,
+        &health,
+        &arch_report,
+        &result.snapshot.import_graph,
+    );
 
     if json_output {
         print_check_json(&check, &health, &result.snapshot)
@@ -497,8 +661,10 @@ fn print_check_results(
     snapshot: &core::snapshot::Snapshot,
 ) -> i32 {
     println!("sentrux check — {} rules checked\n", check.rules_checked);
-    println!("Quality: {}\n",
-        (health.quality_signal * 10000.0).round() as u32);
+    println!(
+        "Quality: {}\n",
+        (health.quality_signal * 10000.0).round() as u32
+    );
     println!("Scan: include_untracked={}", snapshot.include_untracked);
     print_csharp_reference_stats(snapshot);
 
@@ -584,7 +750,11 @@ fn print_check_json(
     snapshot: &core::snapshot::Snapshot,
 ) -> i32 {
     println!("{}", metrics::check_report_json(check, health, snapshot));
-    if check.passed { 0 } else { 1 }
+    if check.passed {
+        0
+    } else {
+        1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +762,7 @@ fn print_check_json(
 // ---------------------------------------------------------------------------
 
 /// Run structural regression gate from CLI. Returns exit code.
-fn run_gate(path: &str, save_mode: bool) -> i32 {
+fn run_gate(path: &str, save_mode: bool, json_output: bool) -> i32 {
     let root = std::path::Path::new(path);
     if !root.is_dir() {
         eprintln!("Error: not a directory: {path}");
@@ -602,11 +772,8 @@ fn run_gate(path: &str, save_mode: bool) -> i32 {
     let baseline_path = root.join(".sentrux").join("baseline.json");
 
     eprintln!("Scanning {path}...");
-    let result = match analysis::scanner::scan_directory(
-        path, None, None,
-        &cli_scan_limits(),
-        None,
-    ) {
+    let result = match analysis::scanner::scan_directory(path, None, None, &cli_scan_limits(), None)
+    {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Scan failed: {e}");
@@ -618,9 +785,9 @@ fn run_gate(path: &str, save_mode: bool) -> i32 {
     let arch_report = metrics::arch::compute_arch(&result.snapshot);
 
     if save_mode {
-        gate_save(&baseline_path, &health, &arch_report)
+        gate_save(&baseline_path, &health, &arch_report, json_output)
     } else {
-        gate_compare(&baseline_path, &health, &arch_report)
+        gate_compare(&baseline_path, &health, &arch_report, json_output)
     }
 }
 
@@ -628,6 +795,7 @@ fn gate_save(
     baseline_path: &std::path::Path,
     health: &metrics::HealthReport,
     _arch_report: &metrics::arch::ArchReport,
+    json_output: bool,
 ) -> i32 {
     if let Some(parent) = baseline_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -638,10 +806,43 @@ fn gate_save(
     let baseline = metrics::arch::ArchBaseline::from_health(health);
     match baseline.save(baseline_path) {
         Ok(()) => {
-            println!("Baseline saved to {}", baseline_path.display());
-            println!("Quality: {}",
-                (health.quality_signal * 10000.0).round() as u32);
-            println!("\nRun `sentrux gate` after making changes to compare.");
+            if json_output {
+                let payload = serde_json::json!({
+                    "saved": true,
+                    "baselinePath": baseline_path.display().to_string(),
+                    "quality": (health.quality_signal * 10000.0).round() as u32,
+                    "metrics": {
+                        "coupling": {
+                            "score": health.coupling_score,
+                            "crossModuleEdges": health.cross_module_edges,
+                            "problemEdges": health.coupling_edges.iter().map(metrics::coupling_edge_detail_json).collect::<Vec<_>>()
+                        },
+                        "cycles": {
+                            "count": health.circular_dep_details.len(),
+                            "cycles": health.circular_dep_details.iter().map(metrics::cycle_detail_json).collect::<Vec<_>>()
+                        },
+                        "godFiles": {
+                            "count": health.god_file_details.len(),
+                            "files": health.god_file_details.iter().map(metrics::god_file_detail_json).collect::<Vec<_>>()
+                        },
+                        "complexFunctions": {
+                            "count": health.complex_functions.len(),
+                            "functions": health.complex_functions.iter().map(metrics::func_metric_json).collect::<Vec<_>>()
+                        }
+                    }
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+                );
+            } else {
+                println!("Baseline saved to {}", baseline_path.display());
+                println!(
+                    "Quality: {}",
+                    (health.quality_signal * 10000.0).round() as u32
+                );
+                println!("\nRun `sentrux gate` after making changes to compare.");
+            }
             0
         }
         Err(e) => {
@@ -655,11 +856,15 @@ fn gate_compare(
     baseline_path: &std::path::Path,
     health: &metrics::HealthReport,
     arch_report: &metrics::arch::ArchReport,
+    json_output: bool,
 ) -> i32 {
     let baseline = match metrics::arch::ArchBaseline::load(baseline_path) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("Failed to load baseline at {}: {e}", baseline_path.display());
+            eprintln!(
+                "Failed to load baseline at {}: {e}",
+                baseline_path.display()
+            );
             eprintln!("Run `sentrux gate --save` first to create one.");
             return 1;
         }
@@ -667,16 +872,35 @@ fn gate_compare(
 
     let diff = baseline.diff(health);
 
+    if json_output {
+        println!("{}", metrics::arch::gate_report_json(&diff));
+        return if diff.degraded { 1 } else { 0 };
+    }
+
     println!("sentrux gate — structural regression check\n");
-    println!("Quality:      {} -> {}",
+    println!(
+        "Quality:      {} -> {}",
         (diff.signal_before * 10000.0).round() as u32,
-        (diff.signal_after * 10000.0).round() as u32);
-    println!("Coupling:     {:.2} → {:.2}", diff.coupling_before, diff.coupling_after);
-    println!("Cycles:       {} → {}", diff.cycles_before, diff.cycles_after);
-    println!("God files:    {} → {}", diff.god_files_before, diff.god_files_after);
+        (diff.signal_after * 10000.0).round() as u32
+    );
+    println!(
+        "Coupling:     {:.2} → {:.2}",
+        diff.coupling_before, diff.coupling_after
+    );
+    println!(
+        "Cycles:       {} → {}",
+        diff.cycles_before, diff.cycles_after
+    );
+    println!(
+        "God files:    {} → {}",
+        diff.god_files_before, diff.god_files_after
+    );
 
     if !arch_report.distance_metrics.is_empty() {
-        println!("\nDistance from Main Sequence: {:.2}", arch_report.avg_distance);
+        println!(
+            "\nDistance from Main Sequence: {:.2}",
+            arch_report.avg_distance
+        );
     }
 
     if diff.degraded {
@@ -684,10 +908,188 @@ fn gate_compare(
         for v in &diff.violations {
             println!("  ✗ {v}");
         }
+        if diff.signal_after >= diff.signal_before && diff.has_hard_metric_regression() {
+            println!("\nHard metric regression caused failure despite aggregate quality improving or staying flat.");
+        }
+        print_coupling_diff(&diff.coupling_diff);
+        print_cycle_diff(&diff.cycle_diff);
+        print_god_file_diff(&diff.god_file_diff);
+        print_function_metric_diff("Complex functions:", &diff.complex_function_diff);
         1
     } else {
         println!("\n✓ No degradation detected");
+        print_coupling_diff(&diff.coupling_diff);
+        print_cycle_diff(&diff.cycle_diff);
+        print_god_file_diff(&diff.god_file_diff);
+        print_function_metric_diff("Complex functions:", &diff.complex_function_diff);
         0
+    }
+}
+
+fn print_coupling_diff(diff: &metrics::arch::CouplingDiff) {
+    if !diff.degraded && diff.added.is_empty() && diff.removed.is_empty() {
+        return;
+    }
+
+    if !diff.baseline_details_available {
+        println!("\nCoupling offender diff unavailable: baseline only contains aggregate counts.");
+        println!(
+            "Run `sentrux gate --save` with this Sentrux version to capture coupling edge details."
+        );
+        print_coupling_edge_section("Current coupling problem edges:", &diff.current);
+        return;
+    }
+
+    print_coupling_edge_section("Added coupling problem edges:", &diff.added);
+    print_coupling_edge_section("Removed coupling problem edges:", &diff.removed);
+    if diff.degraded && diff.added.is_empty() {
+        print_coupling_edge_section("Current coupling problem edges:", &diff.current);
+    }
+}
+
+fn print_coupling_edge_section(title: &str, edges: &[metrics::CouplingEdgeDetail]) {
+    if edges.is_empty() {
+        return;
+    }
+    println!("\n{title}");
+    for edge in edges {
+        println!("  - {} -> {}", edge.from_file, edge.to_file);
+        println!("    reason: {}", edge.reason);
+        println!("    modules: {} -> {}", edge.from_module, edge.to_module);
+        println!("    sources: {}", format_edge_sources(&edge.sources));
+    }
+}
+
+fn print_cycle_diff(diff: &metrics::arch::CycleDiff) {
+    if !diff.degraded && diff.added.is_empty() && diff.removed.is_empty() {
+        return;
+    }
+
+    if !diff.baseline_details_available {
+        println!("\nCycle offender diff unavailable: baseline only contains aggregate counts.");
+        println!("Run `sentrux gate --save` with this Sentrux version to capture cycle edge chains.");
+        print_cycle_detail_section("Current cycles:", &diff.current);
+        return;
+    }
+
+    print_cycle_detail_section("Added cycles:", &diff.added);
+    print_cycle_detail_section("Removed cycles:", &diff.removed);
+    if diff.degraded && diff.added.is_empty() {
+        print_cycle_detail_section("Current cycles:", &diff.current);
+    }
+}
+
+fn print_cycle_detail_section(title: &str, cycles: &[metrics::CycleDetail]) {
+    if cycles.is_empty() {
+        return;
+    }
+    println!("\n{title}");
+    for (idx, cycle) in cycles.iter().enumerate() {
+        println!("  Cycle #{} ({} files):", idx + 1, cycle.files.len());
+        for edge in &cycle.edge_chain {
+            println!(
+                "    {} -> {}  [{}]",
+                edge.from_file,
+                edge.to_file,
+                format_edge_sources(&edge.sources),
+            );
+        }
+    }
+}
+
+fn print_god_file_diff(diff: &metrics::arch::GodFileDiff) {
+    if diff.before_count == diff.after_count
+        && diff.changed_rank_or_score.is_empty()
+        && diff.added.is_empty()
+        && diff.removed.is_empty()
+    {
+        return;
+    }
+
+    if !diff.baseline_details_available {
+        println!("\nGod file offender diff unavailable: baseline only contains aggregate counts.");
+        println!(
+            "Run `sentrux gate --save` with this Sentrux version to capture offender details."
+        );
+        if !diff.current.is_empty() {
+            print_god_file_section("Current god files:", &diff.current, true);
+        }
+        return;
+    }
+
+    print_god_file_section("Added god files:", &diff.added, true);
+    print_god_file_section("Removed god files:", &diff.removed, false);
+    print_god_file_section("Existing god files:", &diff.persisting, false);
+    if !diff.changed_rank_or_score.is_empty() {
+        println!("\nChanged rank or score god files:");
+        for change in &diff.changed_rank_or_score {
+            println!(
+                "  - {} (rank {} -> {}, score {:.2} -> {:.2}, fan_out {} -> {})",
+                change.path,
+                change.rank_before,
+                change.rank_after,
+                change.score_before,
+                change.score_after,
+                change.fan_out_before,
+                change.fan_out_after,
+            );
+        }
+    }
+}
+
+fn print_function_metric_diff(title: &str, diff: &metrics::arch::FunctionMetricDiff) {
+    if !diff.degraded && diff.added.is_empty() && diff.removed.is_empty() {
+        return;
+    }
+
+    if !diff.baseline_details_available {
+        println!("\n{title} offender diff unavailable: baseline only contains aggregate counts.");
+        println!("Run `sentrux gate --save` with this Sentrux version to capture function details.");
+        print_function_metric_section("Current functions:", &diff.current);
+        return;
+    }
+
+    print_function_metric_section("Added functions:", &diff.added);
+    print_function_metric_section("Removed functions:", &diff.removed);
+    if diff.degraded && diff.added.is_empty() {
+        print_function_metric_section("Current functions:", &diff.current);
+    }
+}
+
+fn print_function_metric_section(title: &str, functions: &[metrics::FuncMetric]) {
+    if functions.is_empty() {
+        return;
+    }
+    println!("\n{title}");
+    for function in functions {
+        println!("  - {}:{} (value={})", function.file, function.func, function.value);
+    }
+}
+
+fn print_god_file_section(title: &str, files: &[metrics::GodFileDetail], include_details: bool) {
+    if files.is_empty() {
+        return;
+    }
+    println!("\n{title}");
+    for file in files {
+        println!("  - {}", file.path);
+        if include_details {
+            println!("    reason: {}", file.reason);
+            println!(
+                "    score: {:.2}, threshold: {}, fan_out: {}",
+                file.score, file.threshold, file.fan_out,
+            );
+            println!(
+                "    imports: {}, call_edges: {}, loc: {}, fan_in: {}, max_complexity: {}",
+                file.imports,
+                file.call_edges,
+                file.loc,
+                file.fan_in,
+                file.max_complexity
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+            );
+        }
     }
 }
 
@@ -708,14 +1110,24 @@ fn run_plugin(action: PluginAction) {
 
 fn plugin_list() {
     let dir = sentrux_core::analysis::plugin::plugins_dir();
-    println!("Plugin directory: {}", dir.as_ref().map_or("(none)".into(), |d| d.display().to_string()));
+    println!(
+        "Plugin directory: {}",
+        dir.as_ref()
+            .map_or("(none)".into(), |d| d.display().to_string())
+    );
     let (loaded, errors) = sentrux_core::analysis::plugin::load_all_plugins();
     if loaded.is_empty() && errors.is_empty() {
         println!("No plugins installed.");
         println!("\nInstall a plugin by placing it in ~/.sentrux/plugins/<name>/");
     } else {
         for p in &loaded {
-            println!("  {} v{} [{}] — {}", p.name, p.version, p.extensions.join(", "), p.display_name);
+            println!(
+                "  {} v{} [{}] — {}",
+                p.name,
+                p.version,
+                p.extensions.join(", "),
+                p.display_name
+            );
         }
         for e in &errors {
             println!("  (error) {} — {}", e.plugin_dir.display(), e.error);
@@ -724,8 +1136,10 @@ fn plugin_list() {
 }
 
 fn plugin_init(name: &str) {
-    let dir = sentrux_core::analysis::plugin::plugins_dir()
-        .unwrap_or_else(|| { eprintln!("Cannot determine home directory"); std::process::exit(1); });
+    let dir = sentrux_core::analysis::plugin::plugins_dir().unwrap_or_else(|| {
+        eprintln!("Cannot determine home directory");
+        std::process::exit(1);
+    });
     let plugin_dir = dir.join(name);
     if plugin_dir.exists() {
         eprintln!("Plugin directory already exists: {}", plugin_dir.display());
@@ -734,7 +1148,10 @@ fn plugin_init(name: &str) {
     std::fs::create_dir_all(plugin_dir.join("grammars")).unwrap();
     std::fs::create_dir_all(plugin_dir.join("queries")).unwrap();
     std::fs::create_dir_all(plugin_dir.join("tests")).unwrap();
-    std::fs::write(plugin_dir.join("plugin.toml"), format!(r#"[plugin]
+    std::fs::write(
+        plugin_dir.join("plugin.toml"),
+        format!(
+            r#"[plugin]
 name = "{name}"
 display_name = "{name}"
 version = "0.1.0"
@@ -754,17 +1171,25 @@ abi_version = 14
 capabilities = ["functions", "classes", "imports"]
 
 [checksums]
-"#)).unwrap();
+"#
+        ),
+    )
+    .unwrap();
     std::fs::write(plugin_dir.join("queries").join("tags.scm"),
         ";; TODO: Write tree-sitter queries for this language\n;;\n;; Required captures:\n;;   @func.def / @func.name — function definitions\n;;   @class.def / @class.name — class definitions\n;;   @import.path — import statements\n;;   @call.name — function calls (optional)\n"
     ).unwrap();
     println!("Created plugin template at {}", plugin_dir.display());
     println!("\nNext steps:");
     println!("  1. Edit plugin.toml — set extensions, grammar source");
-    println!("  2. Build the grammar: tree-sitter generate && cc -shared -o grammars/{} src/parser.c",
-        sentrux_core::analysis::plugin::manifest::PluginManifest::grammar_filename());
+    println!(
+        "  2. Build the grammar: tree-sitter generate && cc -shared -o grammars/{} src/parser.c",
+        sentrux_core::analysis::plugin::manifest::PluginManifest::grammar_filename()
+    );
     println!("  3. Write queries/tags.scm");
-    println!("  4. Test: sentrux plugin validate {}", plugin_dir.display());
+    println!(
+        "  4. Test: sentrux plugin validate {}",
+        plugin_dir.display()
+    );
 }
 
 fn plugin_validate(dir: &str) {
@@ -776,15 +1201,16 @@ fn plugin_validate(dir: &str) {
             println!("  name: {}", manifest.plugin.name);
             println!("  version: {}", manifest.plugin.version);
             println!("  extensions: [{}]", manifest.plugin.extensions.join(", "));
-            println!("  capabilities: [{}]", manifest.queries.capabilities.join(", "));
+            println!(
+                "  capabilities: [{}]",
+                manifest.queries.capabilities.join(", ")
+            );
             let query_path = plugin_dir.join("queries").join("tags.scm");
             match std::fs::read_to_string(&query_path) {
-                Ok(qs) => {
-                    match manifest.validate_query_captures(&qs) {
-                        Ok(()) => println!("  queries/tags.scm: OK (captures valid)"),
-                        Err(e) => println!("  queries/tags.scm: FAIL — {}", e),
-                    }
-                }
+                Ok(qs) => match manifest.validate_query_captures(&qs) {
+                    Ok(()) => println!("  queries/tags.scm: OK (captures valid)"),
+                    Err(e) => println!("  queries/tags.scm: FAIL — {}", e),
+                },
                 Err(e) => println!("  queries/tags.scm: MISSING — {}", e),
             }
             let gf = sentrux_core::analysis::plugin::manifest::PluginManifest::grammar_filename();
@@ -809,11 +1235,17 @@ fn plugin_add_standard() {
 }
 
 fn plugin_add(name: &str) {
-    let dir = sentrux_core::analysis::plugin::plugins_dir()
-        .unwrap_or_else(|| { eprintln!("Cannot determine home directory"); std::process::exit(1); });
+    let dir = sentrux_core::analysis::plugin::plugins_dir().unwrap_or_else(|| {
+        eprintln!("Cannot determine home directory");
+        std::process::exit(1);
+    });
     let plugin_dir = dir.join(name);
     if plugin_dir.exists() {
-        eprintln!("Plugin '{}' already installed at {}", name, plugin_dir.display());
+        eprintln!(
+            "Plugin '{}' already installed at {}",
+            name,
+            plugin_dir.display()
+        );
         eprintln!("Remove it first: sentrux plugin remove {}", name);
         std::process::exit(1);
     }
@@ -824,13 +1256,17 @@ fn plugin_add(name: &str) {
     let version = match sentrux_core::analysis::plugin::embedded::EMBEDDED_PLUGINS
         .iter()
         .find(|&&(n, _, _)| n == name)
-        .and_then(|&(_, toml, _)| toml.lines()
-            .find(|l| l.starts_with("version"))
-            .and_then(|l| l.split('"').nth(1)))
-    {
+        .and_then(|&(_, toml, _)| {
+            toml.lines()
+                .find(|l| l.starts_with("version"))
+                .and_then(|l| l.split('"').nth(1))
+        }) {
         Some(v) => v,
         None => {
-            eprintln!("Plugin '{}' not found in embedded data. Is it a valid plugin name?", name);
+            eprintln!(
+                "Plugin '{}' not found in embedded data. Is it a valid plugin name?",
+                name
+            );
             std::process::exit(1);
         }
     };
@@ -884,8 +1320,10 @@ fn download_and_extract_plugin(
 }
 
 fn plugin_remove(name: &str) {
-    let dir = sentrux_core::analysis::plugin::plugins_dir()
-        .unwrap_or_else(|| { eprintln!("Cannot determine home directory"); std::process::exit(1); });
+    let dir = sentrux_core::analysis::plugin::plugins_dir().unwrap_or_else(|| {
+        eprintln!("Cannot determine home directory");
+        std::process::exit(1);
+    });
     let plugin_dir = dir.join(name);
     if !plugin_dir.exists() {
         eprintln!("Plugin '{}' not installed.", name);
@@ -904,9 +1342,12 @@ fn plugin_remove(name: &str) {
 /// blind attempts that panic on unsupported drivers.
 fn probe_available_backends() -> Vec<eframe::wgpu::Backends> {
     let candidates = [
-        ("Primary+GL", eframe::wgpu::Backends::PRIMARY | eframe::wgpu::Backends::GL),
-        ("GL-only",    eframe::wgpu::Backends::GL),
-        ("Primary",    eframe::wgpu::Backends::PRIMARY),
+        (
+            "Primary+GL",
+            eframe::wgpu::Backends::PRIMARY | eframe::wgpu::Backends::GL,
+        ),
+        ("GL-only", eframe::wgpu::Backends::GL),
+        ("Primary", eframe::wgpu::Backends::PRIMARY),
     ];
 
     let mut available = Vec::new();
@@ -962,7 +1403,12 @@ fn run_gui(path: Option<String>) -> eframe::Result<()> {
     let title = title.as_str();
 
     for (i, backends) in backend_attempts.iter().enumerate() {
-        sentrux_core::debug_log!("[gpu] attempt {}/{}: backends {:?}", i + 1, backend_attempts.len(), backends);
+        sentrux_core::debug_log!(
+            "[gpu] attempt {}/{}: backends {:?}",
+            i + 1,
+            backend_attempts.len(),
+            backends
+        );
 
         let options = eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default()
@@ -971,13 +1417,15 @@ fn run_gui(path: Option<String>) -> eframe::Result<()> {
                 .with_title(title),
             renderer: eframe::Renderer::Wgpu,
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
-                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(eframe::egui_wgpu::WgpuSetupCreateNew {
-                    instance_descriptor: eframe::wgpu::InstanceDescriptor {
-                        backends: *backends,
+                wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(
+                    eframe::egui_wgpu::WgpuSetupCreateNew {
+                        instance_descriptor: eframe::wgpu::InstanceDescriptor {
+                            backends: *backends,
+                            ..Default::default()
+                        },
                         ..Default::default()
                     },
-                    ..Default::default()
-                }),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -1084,8 +1532,7 @@ fn ensure_grammars_installed() {
     let any_missing = sentrux_core::analysis::plugin::embedded::EMBEDDED_PLUGINS
         .iter()
         .any(|&(name, toml, _)| {
-            toml.contains("[grammar]")
-                && !dir.join(name).join("grammars").join(platform).exists()
+            toml.contains("[grammar]") && !dir.join(name).join("grammars").join(platform).exists()
         });
 
     if !any_missing {

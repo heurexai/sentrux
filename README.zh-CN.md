@@ -1,3 +1,10 @@
+> ## Heurex fork
+>
+> This localized README keeps the upstream product overview. For fork-specific
+> release notes, actionable `check --json` / `gate --json` diagnostics, agent
+> debug commands, and Windows executable version stamping, see
+> [docs/heurex-fork.md](docs/heurex-fork.md).
+
 <div align="center">
 
 <picture>
