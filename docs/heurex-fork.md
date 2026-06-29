@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.11`.
+Current fork release: `0.5.12`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.11 (Heurex fork)
+sentrux 0.5.12 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.11.0 (Heurex fork)`
-- `ProductVersion`: `0.5.11-heurex-fork`
+- `FileVersion`: `0.5.12.0 (Heurex fork)`
+- `ProductVersion`: `0.5.12-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -31,12 +31,16 @@ stamp automatically.
 For a failed gate, agents should start with:
 
 ```bash
-sentrux gate --json <repo>
+sentrux gate --json --include-untracked <repo>
 ```
 
 This compares the current scan against `.sentrux/baseline.json` and emits the
 before/after metric counts, hard degradations, and added/removed/current
 offenders for actionable metrics.
+
+Use `--include-untracked` when debugging pre-commit gate failures or brand-new
+files that have not been `git add`-ed yet. Without the flag, `gate` preserves
+the existing tracked-file-only behavior.
 
 For a current structural assessment that includes untracked worktree files,
 agents should run:
@@ -54,6 +58,7 @@ The fork changes Sentrux reporting from aggregate counters to root-cause
 diagnostics. The most important JSON paths are:
 
 - `gate --json`: `degradations[]`
+- `gate --json`: `scan.include_untracked`
 - `gate --json`: `hardMetricFailureDespiteQualityImprovement`
 - `gate --json`: `metrics.godFiles.addedGodFiles[]`
 - `gate --json`: `metrics.godFiles.removedGodFiles[]`
@@ -81,6 +86,13 @@ the edge came from normal imports, project references, C# type references, call
 inference, or resolver fallback.
 
 The text output mirrors the JSON RCA for operators who are reading logs.
+
+## Changelog
+
+### 0.5.12
+
+- `gate` now accepts `--include-untracked` to include untracked working-tree
+  files in the regression scan (default off; backward-compatible).
 
 ## Release Workflow
 

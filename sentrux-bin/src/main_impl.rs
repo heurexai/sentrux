@@ -66,7 +66,7 @@ Agent quick start:
     sentrux check --json --include-untracked <repo>
 
   Baseline regression / gate failure:
-    sentrux gate --json <repo>
+    sentrux gate --json --include-untracked <repo>
 
   Create or refresh a baseline intentionally:
     sentrux gate --save --json <repo>
@@ -84,12 +84,13 @@ Important JSON paths for agents:
 
   gate --json:
     passed
+    scan.include_untracked
     degradations[]
     hardMetricFailureDespiteQualityImprovement
     metrics.godFiles.addedGodFiles[]
     metrics.coupling.offenders.added[]
     metrics.cycles.cycles.added[]
-    metrics.complexFunctions.functions.added[]
+    metrics.complexFunctions.functions.addedFunctions[]
 
 Exit codes:
   0  no blocking assessment or gate failure
@@ -101,10 +102,12 @@ Config and state files:
   .sentruxignore            scan exclusions, including tracked files
   .sentrux/baseline.json    baseline for `gate`
 
-Tip: when debugging why a gate failed, prefer `sentrux gate --json <repo>` first.
-If the baseline is old and lacks offender details, run `sentrux check --json
---include-untracked <repo>` to inspect the current offenders, then refresh the
-baseline only after the operator decides the new structure is acceptable.",
+Tip: when debugging why a gate failed before commit, prefer
+`sentrux gate --json --include-untracked <repo>` first so brand-new files are
+part of the regression scan. If the baseline is old and lacks offender details,
+run `sentrux check --json --include-untracked <repo>` to inspect the current
+offenders, then refresh the baseline only after the operator decides the new
+structure is acceptable.",
     version = version_string(),
     arg_required_else_help = false,
 )]
@@ -195,7 +198,7 @@ Structural regression gate: compare the current scan against
 .sentrux/baseline.json.
 
 Agent command for a gate failure:
-  sentrux gate --json <repo>
+  sentrux gate --json --include-untracked <repo>
 
 Use `gate` when the agent needs to explain a regression relative to the saved
 baseline. It is the best command for answering: what changed since the baseline
@@ -203,6 +206,7 @@ that made Sentrux fail?
 
 Important JSON paths:
   passed
+  scan.include_untracked
   quality.before / quality.after / quality.delta
   degradations[]
   hardMetricFailureDespiteQualityImprovement
@@ -215,11 +219,12 @@ Important JSON paths:
   metrics.coupling.offenders.current[]
   metrics.cycles.cycles.added[]
   metrics.cycles.cycles.current[]
-  metrics.complexFunctions.functions.added[]
+  metrics.complexFunctions.functions.addedFunctions[]
   metrics.complexFunctions.functions.current[]
 
 Typical debug flow:
-  1. Run `sentrux gate --json <repo>`.
+  1. Run `sentrux gate --json --include-untracked <repo>` when debugging a
+     pre-commit or worktree gate failure.
   2. Inspect `degradations[]` to identify the failing hard metric.
   3. Inspect the matching `added` offender list for the root cause.
   4. If `baselineDetailsAvailable` is false for a metric, the baseline was
@@ -239,6 +244,10 @@ Exit code:
         /// Save current metrics as the new baseline
         #[arg(long)]
         save: bool,
+
+        /// Include untracked, non-ignored Git worktree files in the scan
+        #[arg(long)]
+        include_untracked: bool,
 
         /// Emit machine-readable JSON diagnostics
         #[arg(long)]
@@ -371,8 +380,13 @@ pub fn run() -> eframe::Result<()> {
         }) => {
             std::process::exit(run_check(&path, include_untracked, json));
         }
-        Some(Command::Gate { save, json, path }) => {
-            std::process::exit(run_gate(&path, save, json));
+        Some(Command::Gate {
+            save,
+            include_untracked,
+            json,
+            path,
+        }) => {
+            std::process::exit(run_gate(&path, save, include_untracked, json));
         }
         Some(Command::Mcp) => {
             app::mcp_server::run_mcp_server(None);
@@ -762,7 +776,7 @@ fn print_check_json(
 // ---------------------------------------------------------------------------
 
 /// Run structural regression gate from CLI. Returns exit code.
-fn run_gate(path: &str, save_mode: bool, json_output: bool) -> i32 {
+fn run_gate(path: &str, save_mode: bool, include_untracked: bool, json_output: bool) -> i32 {
     let root = std::path::Path::new(path);
     if !root.is_dir() {
         eprintln!("Error: not a directory: {path}");
@@ -771,30 +785,62 @@ fn run_gate(path: &str, save_mode: bool, json_output: bool) -> i32 {
 
     let baseline_path = root.join(".sentrux").join("baseline.json");
 
-    eprintln!("Scanning {path}...");
-    let result = match analysis::scanner::scan_directory(path, None, None, &cli_scan_limits(), None)
-    {
+    if include_untracked {
+        eprintln!("Scanning {path} including untracked files...");
+    } else {
+        eprintln!("Scanning {path}...");
+    }
+    let (health, arch_report) = match scan_gate_health(path, include_untracked) {
         Ok(r) => r,
-        Err(e) => {
-            eprintln!("Scan failed: {e}");
+        Err(message) => {
+            eprintln!("{message}");
             return 1;
         }
     };
 
+    if save_mode {
+        gate_save(
+            &baseline_path,
+            &health,
+            &arch_report,
+            include_untracked,
+            json_output,
+        )
+    } else {
+        gate_compare(
+            &baseline_path,
+            &health,
+            &arch_report,
+            include_untracked,
+            json_output,
+        )
+    }
+}
+
+fn scan_gate_health(
+    path: &str,
+    include_untracked: bool,
+) -> Result<(metrics::HealthReport, metrics::arch::ArchReport), String> {
+    let result = analysis::scanner::scan_directory_with_options(
+        path,
+        None,
+        None,
+        &cli_scan_limits(),
+        None,
+        analysis::scanner::ScanOptions { include_untracked },
+    )
+    .map_err(|e| format!("Scan failed: {e}"))?;
+
     let health = metrics::compute_health(&result.snapshot);
     let arch_report = metrics::arch::compute_arch(&result.snapshot);
-
-    if save_mode {
-        gate_save(&baseline_path, &health, &arch_report, json_output)
-    } else {
-        gate_compare(&baseline_path, &health, &arch_report, json_output)
-    }
+    Ok((health, arch_report))
 }
 
 fn gate_save(
     baseline_path: &std::path::Path,
     health: &metrics::HealthReport,
     _arch_report: &metrics::arch::ArchReport,
+    include_untracked: bool,
     json_output: bool,
 ) -> i32 {
     if let Some(parent) = baseline_path.parent() {
@@ -810,6 +856,9 @@ fn gate_save(
                 let payload = serde_json::json!({
                     "saved": true,
                     "baselinePath": baseline_path.display().to_string(),
+                    "scan": {
+                        "include_untracked": include_untracked
+                    },
                     "quality": (health.quality_signal * 10000.0).round() as u32,
                     "metrics": {
                         "coupling": {
@@ -841,6 +890,7 @@ fn gate_save(
                     "Quality: {}",
                     (health.quality_signal * 10000.0).round() as u32
                 );
+                println!("Scan: include_untracked={include_untracked}");
                 println!("\nRun `sentrux gate` after making changes to compare.");
             }
             0
@@ -856,6 +906,7 @@ fn gate_compare(
     baseline_path: &std::path::Path,
     health: &metrics::HealthReport,
     arch_report: &metrics::arch::ArchReport,
+    include_untracked: bool,
     json_output: bool,
 ) -> i32 {
     let baseline = match metrics::arch::ArchBaseline::load(baseline_path) {
@@ -873,11 +924,12 @@ fn gate_compare(
     let diff = baseline.diff(health);
 
     if json_output {
-        println!("{}", metrics::arch::gate_report_json(&diff));
+        println!("{}", gate_report_json_with_scan(&diff, include_untracked));
         return if diff.degraded { 1 } else { 0 };
     }
 
     println!("sentrux gate — structural regression check\n");
+    println!("Scan:         include_untracked={include_untracked}");
     println!(
         "Quality:      {} -> {}",
         (diff.signal_before * 10000.0).round() as u32,
@@ -926,6 +978,21 @@ fn gate_compare(
     }
 }
 
+fn gate_report_json_with_scan(diff: &metrics::arch::ArchDiff, include_untracked: bool) -> String {
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&metrics::arch::gate_report_json(diff))
+            .unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "scan".to_string(),
+            serde_json::json!({
+                "include_untracked": include_untracked
+            }),
+        );
+    }
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
 fn print_coupling_diff(diff: &metrics::arch::CouplingDiff) {
     if !diff.degraded && diff.added.is_empty() && diff.removed.is_empty() {
         return;
@@ -967,7 +1034,9 @@ fn print_cycle_diff(diff: &metrics::arch::CycleDiff) {
 
     if !diff.baseline_details_available {
         println!("\nCycle offender diff unavailable: baseline only contains aggregate counts.");
-        println!("Run `sentrux gate --save` with this Sentrux version to capture cycle edge chains.");
+        println!(
+            "Run `sentrux gate --save` with this Sentrux version to capture cycle edge chains."
+        );
         print_cycle_detail_section("Current cycles:", &diff.current);
         return;
     }
@@ -1044,7 +1113,9 @@ fn print_function_metric_diff(title: &str, diff: &metrics::arch::FunctionMetricD
 
     if !diff.baseline_details_available {
         println!("\n{title} offender diff unavailable: baseline only contains aggregate counts.");
-        println!("Run `sentrux gate --save` with this Sentrux version to capture function details.");
+        println!(
+            "Run `sentrux gate --save` with this Sentrux version to capture function details."
+        );
         print_function_metric_section("Current functions:", &diff.current);
         return;
     }
@@ -1062,7 +1133,10 @@ fn print_function_metric_section(title: &str, functions: &[metrics::FuncMetric])
     }
     println!("\n{title}");
     for function in functions {
-        println!("  - {}:{} (value={})", function.file, function.func, function.value);
+        println!(
+            "  - {}:{} (value={})",
+            function.file, function.func, function.value
+        );
     }
 }
 
@@ -1587,4 +1661,199 @@ fn ensure_grammars_installed() {
         eprintln!("  URL: {url}");
     }
     eprintln!();
+}
+
+#[cfg(test)]
+mod gate_cli_tests {
+    use super::*;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command as ProcessCommand;
+
+    #[test]
+    fn gate_accepts_include_untracked_flag() {
+        let cli = Cli::try_parse_from(["sentrux", "gate", "--include-untracked", "."]).unwrap();
+
+        match cli.command {
+            Some(Command::Gate {
+                include_untracked, ..
+            }) => assert!(include_untracked),
+            _ => panic!("expected gate command"),
+        }
+    }
+
+    #[test]
+    fn gate_include_untracked_catches_untracked_regression_with_offender_details() {
+        let root = unique_root("gate-untracked");
+        let result = (|| {
+            init_repo(&root);
+            write_source(&root, "src/Baseline.cs", baseline_csharp("Baseline"));
+            run_git(&root, &["add", "src/Baseline.cs"]);
+
+            let root_str = root.to_str().unwrap();
+            assert_eq!(run_gate(root_str, true, false, true), 0);
+
+            write_source(&root, "src/NewComplex.cs", complex_csharp("NewComplex"));
+
+            assert_eq!(
+                run_gate(root_str, false, false, true),
+                0,
+                "default gate must preserve tracked-only behavior"
+            );
+            assert_eq!(
+                run_gate(root_str, false, true, true),
+                1,
+                "gate --include-untracked must fail on the new complex function"
+            );
+
+            let payload = gate_payload(&root, true);
+            assert_eq!(payload["passed"], false);
+            assert_eq!(payload["scan"]["include_untracked"], true);
+            assert!(has_degradation(&payload, "complexFunctions"));
+            assert!(
+                added_complex_function_files(&payload)
+                    .iter()
+                    .any(|file| file == "src/NewComplex.cs"),
+                "expected src/NewComplex.cs in added complex-function offenders: {payload}"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    #[test]
+    fn gate_flags_tracked_modified_regression_with_and_without_include_untracked() {
+        let root = unique_root("gate-tracked-modified");
+        let result = (|| {
+            init_repo(&root);
+            write_source(&root, "src/Tracked.cs", baseline_csharp("Tracked"));
+            run_git(&root, &["add", "src/Tracked.cs"]);
+
+            let root_str = root.to_str().unwrap();
+            assert_eq!(run_gate(root_str, true, false, true), 0);
+
+            write_source(&root, "src/Tracked.cs", complex_csharp("Tracked"));
+
+            assert_eq!(
+                run_gate(root_str, false, false, true),
+                1,
+                "tracked working-tree edits must still be scanned without the flag"
+            );
+            assert_eq!(
+                run_gate(root_str, false, true, true),
+                1,
+                "tracked working-tree edits must also be scanned with the flag"
+            );
+
+            let payload_without_flag = gate_payload(&root, false);
+            assert_eq!(payload_without_flag["scan"]["include_untracked"], false);
+            assert!(
+                added_complex_function_files(&payload_without_flag)
+                    .iter()
+                    .any(|file| file == "src/Tracked.cs"),
+                "expected src/Tracked.cs in added complex-function offenders: {payload_without_flag}"
+            );
+
+            let payload_with_flag = gate_payload(&root, true);
+            assert_eq!(payload_with_flag["scan"]["include_untracked"], true);
+            assert!(
+                added_complex_function_files(&payload_with_flag)
+                    .iter()
+                    .any(|file| file == "src/Tracked.cs"),
+                "expected src/Tracked.cs in added complex-function offenders: {payload_with_flag}"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    fn gate_payload(root: &Path, include_untracked: bool) -> serde_json::Value {
+        let root_str = root.to_str().unwrap();
+        let (health, _) = scan_gate_health(root_str, include_untracked).unwrap();
+        let baseline =
+            metrics::arch::ArchBaseline::load(&root.join(".sentrux").join("baseline.json"))
+                .unwrap();
+        let diff = baseline.diff(&health);
+        serde_json::from_str(&gate_report_json_with_scan(&diff, include_untracked)).unwrap()
+    }
+
+    fn has_degradation(payload: &serde_json::Value, metric: &str) -> bool {
+        payload["degradations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["metric"] == metric)
+    }
+
+    fn added_complex_function_files(payload: &serde_json::Value) -> Vec<String> {
+        payload["metrics"]["complexFunctions"]["functions"]["addedFunctions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["file"].as_str())
+            .map(normalize_path)
+            .collect()
+    }
+
+    fn normalize_path(path: &str) -> String {
+        path.replace('\\', "/")
+    }
+
+    fn init_repo(root: &Path) {
+        fs::create_dir_all(root.join("src")).unwrap();
+        run_git(root, &["init"]);
+    }
+
+    fn write_source(root: &Path, relative: &str, source: String) {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, source).unwrap();
+    }
+
+    fn baseline_csharp(class_name: &str) -> String {
+        format!("public class {class_name} {{ public int Ok(int x) {{ return x + 1; }} }}\n")
+    }
+
+    fn complex_csharp(class_name: &str) -> String {
+        let mut source = format!(
+            "public class {class_name} {{\n    public int TooComplex(int x) {{\n        var total = 0;\n"
+        );
+        for value in 0..30 {
+            source.push_str(&format!(
+                "        if (x == {value}) {{ total += {value}; }}\n"
+            ));
+        }
+        source.push_str("        return total;\n    }\n}\n");
+        source
+    }
+
+    fn unique_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "sentrux-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let output = ProcessCommand::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

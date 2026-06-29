@@ -14,12 +14,13 @@
 > - **God-file root cause reporting** — gate failures list the exact added/removed/existing god files, their language, reason, score/threshold, and contributing dimensions such as LOC, imports, fan-in, fan-out, call edges, centrality, coupling, and complexity when available.
 > - **Actionable metric offenders** — cycles include exact edge chains and edge kinds; coupling, depth, complex/long/large files, duplicate code, and dead-code reports expose the files or functions behind the counter.
 > - **Agent-focused help** — `sentrux --help`, `sentrux check --help`, and `sentrux gate --help` now describe the commands and JSON paths agents should use to debug failed assessments.
-> - **Windows fork version resource** — the Windows executable embeds version metadata identifying the fork build. This release is `0.5.11`; `ProductVersion` is stamped as `0.5.11-heurex-fork`.
+> - **Gate untracked-file option** — `sentrux gate --include-untracked` includes untracked, non-ignored worktree files in the regression scan while keeping the default tracked-only behavior unchanged.
+> - **Windows fork version resource** — the Windows executable embeds version metadata identifying the fork build. This release is `0.5.12`; `ProductVersion` is stamped as `0.5.12-heurex-fork`.
 >
 > Agent RCA shortcut:
 >
 > ```bash
-> sentrux gate --json <repo>
+> sentrux gate --json --include-untracked <repo>
 > sentrux check --json --include-untracked <repo>
 > ```
 >
