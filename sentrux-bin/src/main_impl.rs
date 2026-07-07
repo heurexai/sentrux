@@ -1614,8 +1614,9 @@ fn ensure_grammars_installed() {
     }
 
     let version = env!("CARGO_PKG_VERSION");
+    let release_repo = option_env!("SENTRUX_GRAMMAR_RELEASE_REPO").unwrap_or("heurexai/sentrux");
     let url = format!(
-        "https://github.com/sentrux/sentrux/releases/download/v{version}/grammars-{platform_key}.tar.gz"
+        "https://github.com/{release_repo}/releases/download/v{version}/grammars-{platform_key}.tar.gz"
     );
     let tarball = dir.join("grammars.tar.gz");
 

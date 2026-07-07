@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.12`.
+Current fork release: `0.5.13`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.12 (Heurex fork)
+sentrux 0.5.13 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.12.0 (Heurex fork)`
-- `ProductVersion`: `0.5.12-heurex-fork`
+- `FileVersion`: `0.5.13.0 (Heurex fork)`
+- `ProductVersion`: `0.5.13-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -89,6 +89,14 @@ The text output mirrors the JSON RCA for operators who are reading logs.
 
 ## Changelog
 
+### 0.5.13
+
+- Release downloads are built to avoid separate VC++ runtime, Homebrew/OpenSSL,
+  or Linux GTK package requirements. The release workflow statically links the
+  Windows CRT, vendors OpenSSL on Unix, uses the Linux portal file-dialog
+  backend instead of direct GTK linkage, and fails the build if those runtime
+  dependencies reappear.
+
 ### 0.5.12
 
 - `gate` now accepts `--include-untracked` to include untracked working-tree
@@ -103,10 +111,15 @@ Patch release checklist for this fork:
 3. Run `cargo test --locked --workspace`.
 4. Build the release binary and confirm `sentrux --version` includes
    `(Heurex fork)`.
-5. Commit the change on `main`.
-6. Push `main` to `origin`.
-7. Tag `v<version>` and push the tag.
-8. The GitHub `Release` workflow builds fork-named release artifacts and names
+5. Verify self-contained runtime behavior before release:
+   - On Windows, run the forked executable in Windows Sandbox and confirm it
+     starts without a VC++ Redistributable registry key being present.
+   - On Linux, run the release binary in a fresh container and confirm `ldd`
+     does not list OpenSSL, GTK, GDK, GLib, or GObject runtime packages.
+6. Commit the change on `main`.
+7. Push `main` to `origin`.
+8. Tag `v<version>` and push the tag.
+9. The GitHub `Release` workflow builds fork-named release artifacts and names
    the release `Sentrux v<version> (Heurex fork)`.
 
 Do not hard-code local release directories in repository files. Local tool

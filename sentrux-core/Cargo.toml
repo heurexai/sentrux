@@ -1,6 +1,6 @@
 [package]
 name = "sentrux-core"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 description = "Core library for sentrux — structural quality analysis engine"
 license = "MIT"
@@ -13,7 +13,7 @@ categories = ["development-tools", "visualization"]
 eframe = { workspace = true }
 serde_json = "1"
 egui = { workspace = true }
-rfd = { version = "0.15", default-features = false, features = ["gtk3"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 crossbeam-channel = "0.5"
 rayon = "1"
 ignore = "0.4"

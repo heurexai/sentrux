@@ -1,6 +1,6 @@
 [package]
 name = "sentrux"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 description = "Live codebase visualization and structural quality gate for AI-agent-written code"
 license = "MIT"
@@ -36,7 +36,6 @@ openssl = { version = "0.10", optional = true }
 default = []
 pro = ["sentrux-core/pro"]
 # Opt-in: build OpenSSL from source via openssl-src instead of requiring a
-# system OpenSSL. Needed for cross-compiling x86_64-apple-darwin from the
-# arm64 macOS CI runner. NOT enabled by default — native/linux/windows builds
-# keep using their existing system OpenSSL, which already works.
+# system OpenSSL. Release builds enable this on Unix so downloads do not
+# require OpenSSL/LibreSSL packages to be installed separately.
 vendored-openssl = ["dep:openssl", "openssl/vendored"]

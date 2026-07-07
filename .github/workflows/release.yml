@@ -18,19 +18,19 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: sentrux-darwin-arm64
+            features: vendored-openssl
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: sentrux-darwin-x86_64
-            # openssl-sys can't cross-compile from the arm64 runner against a
-            # system OpenSSL, so build OpenSSL from source via openssl-src.
-            # macos-latest runners ship the NASM/Perl toolchain openssl-src needs.
             features: vendored-openssl
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: sentrux-linux-x86_64
+            features: vendored-openssl
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: sentrux-linux-aarch64
+            features: vendored-openssl
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: sentrux-windows-x86_64.exe
@@ -57,17 +57,14 @@ jobs:
             echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
             sudo apt-get update
             sudo apt-get install -y gcc-aarch64-linux-gnu \
-              libssl-dev:arm64 \
-              libglib2.0-dev:arm64 \
-              libgtk-3-dev:arm64 \
               libxcb-render0-dev:arm64 \
               libxcb-shape0-dev:arm64 \
               libxcb-xfixes0-dev:arm64 \
               libxkbcommon-dev:arm64 || \
             sudo apt-get install -y gcc-aarch64-linux-gnu
           else
-            sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
-              libxcb-xfixes0-dev libxkbcommon-dev libssl-dev libvulkan-dev
+            sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
+              libxcb-xfixes0-dev libxkbcommon-dev libvulkan-dev
           fi
 
       - name: Checkout Pro crate (official release only)
@@ -94,9 +91,12 @@ jobs:
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=/" >> $GITHUB_ENV
-          echo "OPENSSL_DIR=/usr" >> $GITHUB_ENV
-          echo "OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
-          echo "OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu" >> $GITHUB_ENV
+
+      - name: Statically link Windows CRT
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          "RUSTFLAGS=-C target-feature=+crt-static" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Build release binary (with Pro)
         if: github.repository == 'sentrux/sentrux'
@@ -114,6 +114,42 @@ jobs:
           else
             cp target/${{ matrix.target }}/release/sentrux ${{ matrix.artifact }}
             chmod +x ${{ matrix.artifact }}
+          fi
+
+      - name: Audit Windows runtime dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("${{ matrix.artifact }}")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          $bad = [regex]::Matches($text, '(?i)(vcruntime[^\x00\r\n ]*\.dll|msvcp[^\x00\r\n ]*\.dll|api-ms-win-crt[^\x00\r\n ]*\.dll|ucrtbase\.dll)') |
+            ForEach-Object { $_.Value.ToLowerInvariant() } |
+            Sort-Object -Unique
+          if ($bad) {
+            $bad | ForEach-Object { Write-Error "Forbidden Windows runtime dependency: $_" }
+            throw "Windows release asset must not require VC++/UCRT redistributables."
+          }
+
+      - name: Audit Linux runtime dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd "${{ matrix.artifact }}" | tee runtime-dependencies.txt
+          if grep -E 'lib(ssl|crypto|gtk|gdk|glib|gobject)-|lib(ssl|crypto|gtk|gdk|glib|gobject)\.so' runtime-dependencies.txt; then
+            echo "Forbidden Linux runtime-package dependency found." >&2
+            exit 1
+          fi
+
+      - name: Audit macOS runtime dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          otool -L "${{ matrix.artifact }}" | tee runtime-dependencies.txt
+          if grep -E '/opt/homebrew|/usr/local/opt|libssl|libcrypto' runtime-dependencies.txt; then
+            echo "Forbidden macOS package-manager runtime dependency found." >&2
+            exit 1
           fi
 
       - name: Upload artifact
