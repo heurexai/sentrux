@@ -56,14 +56,14 @@ jobs:
             echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy main restricted universe" | sudo tee /etc/apt/sources.list.d/arm64.list
             echo "deb [arch=arm64] http://ports.ubuntu.com/ jammy-updates main restricted universe" | sudo tee -a /etc/apt/sources.list.d/arm64.list
             sudo apt-get update
-            sudo apt-get install -y gcc-aarch64-linux-gnu \
+            sudo apt-get install -y gcc-aarch64-linux-gnu binutils \
               libxcb-render0-dev:arm64 \
               libxcb-shape0-dev:arm64 \
               libxcb-xfixes0-dev:arm64 \
               libxkbcommon-dev:arm64 || \
-            sudo apt-get install -y gcc-aarch64-linux-gnu
+            sudo apt-get install -y gcc-aarch64-linux-gnu binutils
           else
-            sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev \
+            sudo apt-get install -y binutils libxcb-render0-dev libxcb-shape0-dev \
               libxcb-xfixes0-dev libxkbcommon-dev libvulkan-dev
           fi
 
@@ -135,8 +135,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ldd "${{ matrix.artifact }}" | tee runtime-dependencies.txt
-          if grep -E 'lib(ssl|crypto|gtk|gdk|glib|gobject)-|lib(ssl|crypto|gtk|gdk|glib|gobject)\.so' runtime-dependencies.txt; then
+          readelf -d "${{ matrix.artifact }}" | tee runtime-dependencies.txt
+          if grep -E '\(NEEDED\).*lib(ssl|crypto|gtk|gdk|glib|gobject)(-|\.so)' runtime-dependencies.txt; then
             echo "Forbidden Linux runtime-package dependency found." >&2
             exit 1
           fi
