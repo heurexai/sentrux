@@ -63,10 +63,17 @@ jobs:
             fi
           done
           if [ "$DOWNLOADED" = false ]; then
-            echo "Grammar download failed from all recent tags"
+            echo "::error::Grammar download failed from all recent tags"
+            exit 1
           fi
-          # Sync embedded plugin configs (TOML) without triggering grammar download
-          SENTRUX_SKIP_GRAMMAR_DOWNLOAD=1 cargo run -- --version || true
+          # Sync embedded plugin configs and prove the runtime can load C#.
+          # `--version` exits inside clap parsing and does not run startup sync.
+          SENTRUX_SKIP_GRAMMAR_DOWNLOAD=1 cargo run -- plugin list | tee /tmp/sentrux-plugins.txt
+          grep -Eq '^[[:space:]]+csharp v' /tmp/sentrux-plugins.txt || {
+            echo "::error::C# grammar plugin was not loadable after grammar installation."
+            cat /tmp/sentrux-plugins.txt
+            exit 1
+          }
 
       - name: Test
         run: cargo test

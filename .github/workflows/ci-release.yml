@@ -57,7 +57,9 @@ jobs:
           curl -fsSL "$URL" -o /tmp/grammars.tar.gz
           tar xzf /tmp/grammars.tar.gz -C ~/.sentrux/plugins/
           echo "Grammar bundle downloaded from ${TAG}"
-          SENTRUX_SKIP_GRAMMAR_DOWNLOAD=1 cargo run -- --version || true
+          cargo run -- plugin verify --json \
+            --plugin-root "$HOME/.sentrux/plugins" \
+            --require-language csharp
 
       - name: Test
         run: cargo test

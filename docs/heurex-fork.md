@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.16`.
+Current fork release: `0.5.17`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.16 (Heurex fork)
+sentrux 0.5.17 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.16.0 (Heurex fork)`
-- `ProductVersion`: `0.5.16-heurex-fork`
+- `FileVersion`: `0.5.17.0 (Heurex fork)`
+- `ProductVersion`: `0.5.17-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -124,12 +124,23 @@ Stable fatal diagnostic codes include:
 
 - No unreleased fork changes.
 
+### 0.5.17
+
+- CI grammar provisioning now fails closed when no grammar bundle is available
+  and verifies that the extracted bundle actually loads the C# runtime plugin
+  before running tests. The root cause was that CI downloaded old grammar
+  bundles that contained binaries but no `plugin.toml` or query files, then
+  tried to sync metadata with `sentrux --version`; clap exits during version
+  parsing, so startup sync never ran and Sentrux loaded zero languages.
+- Release CI now verifies the freshly published grammar bundle with immutable
+  `sentrux plugin verify --json --plugin-root ... --require-language csharp`
+  before running release tests.
+
 ### 0.5.16
 
-- Gate CLI tests now verify actionable file diagnostics on runners with or
-  without a loaded C# grammar, accepting either metric offenders or
-  `analysis.structuralCoverage.unparsedCodeFiles[]` as long as the exact file
-  responsible is named.
+- Superseded by `0.5.17`. This tag exposed the CI grammar-provisioning issue:
+  the workflow could download a grammar bundle and still run tests with an empty
+  plugin inventory.
 
 ### 0.5.15
 

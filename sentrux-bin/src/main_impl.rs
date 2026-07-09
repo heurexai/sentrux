@@ -3119,7 +3119,13 @@ capabilities = []
             let payload = gate_payload(&root, true);
             assert_eq!(payload["passed"], false);
             assert_eq!(payload["scan"]["include_untracked"], true);
-            assert_file_explains_gate_regression(&payload, "src/NewComplex.cs");
+            assert!(has_degradation(&payload, "complexFunctions"));
+            assert!(
+                added_complex_function_files(&payload)
+                    .iter()
+                    .any(|file| file == "src/NewComplex.cs"),
+                "expected src/NewComplex.cs in added complex-function offenders: {payload}"
+            );
         })();
         let _ = fs::remove_dir_all(&root);
         result
@@ -3172,11 +3178,21 @@ capabilities = []
 
             let payload_without_flag = gate_payload(&root, false);
             assert_eq!(payload_without_flag["scan"]["include_untracked"], false);
-            assert_file_explains_gate_regression(&payload_without_flag, "src/Tracked.cs");
+            assert!(
+                added_complex_function_files(&payload_without_flag)
+                    .iter()
+                    .any(|file| file == "src/Tracked.cs"),
+                "expected src/Tracked.cs in added complex-function offenders: {payload_without_flag}"
+            );
 
             let payload_with_flag = gate_payload(&root, true);
             assert_eq!(payload_with_flag["scan"]["include_untracked"], true);
-            assert_file_explains_gate_regression(&payload_with_flag, "src/Tracked.cs");
+            assert!(
+                added_complex_function_files(&payload_with_flag)
+                    .iter()
+                    .any(|file| file == "src/Tracked.cs"),
+                "expected src/Tracked.cs in added complex-function offenders: {payload_with_flag}"
+            );
         })();
         let _ = fs::remove_dir_all(&root);
         result
@@ -3211,28 +3227,6 @@ capabilities = []
         .unwrap()
     }
 
-    fn assert_file_explains_gate_regression(payload: &serde_json::Value, path: &str) {
-        let expected = normalize_path(path);
-        if has_degradation(payload, "complexFunctions") {
-            assert!(
-                added_complex_function_files(payload)
-                    .iter()
-                    .any(|file| file == &expected),
-                "expected {expected} in added complex-function offenders: {payload}"
-            );
-            return;
-        }
-
-        assert!(
-            has_degradation(payload, "quality"),
-            "expected a complexFunctions or quality degradation: {payload}"
-        );
-        assert!(
-            unparsed_code_files(payload).iter().any(|file| file == &expected),
-            "expected {expected} in unparsed structural coverage when parser output is unavailable: {payload}"
-        );
-    }
-
     fn has_degradation(payload: &serde_json::Value, metric: &str) -> bool {
         payload["degradations"]
             .as_array()
@@ -3247,16 +3241,6 @@ capabilities = []
             .unwrap()
             .iter()
             .filter_map(|item| item["file"].as_str())
-            .map(normalize_path)
-            .collect()
-    }
-
-    fn unparsed_code_files(payload: &serde_json::Value) -> Vec<String> {
-        payload["analysis"]["structuralCoverage"]["unparsedCodeFiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|item| item["path"].as_str())
             .map(normalize_path)
             .collect()
     }
