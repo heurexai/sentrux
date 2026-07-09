@@ -3470,7 +3470,7 @@ checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
 
 [[package]]
 name = "sentrux"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "clap",
  "dirs",
@@ -3484,7 +3484,7 @@ dependencies = [
 
 [[package]]
 name = "sentrux-core"
-version = "0.5.14"
+version = "0.5.15"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",

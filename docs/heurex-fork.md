@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.14`.
+Current fork release: `0.5.15`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.14 (Heurex fork)
+sentrux 0.5.15 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.14.0 (Heurex fork)`
-- `ProductVersion`: `0.5.14-heurex-fork`
+- `FileVersion`: `0.5.15.0 (Heurex fork)`
+- `ProductVersion`: `0.5.15-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -123,6 +123,11 @@ Stable fatal diagnostic codes include:
 ### Unreleased
 
 - No unreleased fork changes.
+
+### 0.5.15
+
+- Linux ARM64 grammar release builds now install the cross C++ compiler needed
+  for grammars with C++ scanners, including Nim.
 
 ### 0.5.14
 
