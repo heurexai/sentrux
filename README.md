@@ -11,6 +11,7 @@
 > - **C# source type dependency edges** — type-level dependency edges inferred from C# source.
 > - **Cycle edge diagnostics** — per-cycle edge chains reported in `check` output to pinpoint the imports that form each dependency cycle.
 > - **Actionable gate/check JSON** — `sentrux check --json` reports current structural metrics with offender lists, and `sentrux gate --json` reports baseline/current deltas with added, removed, persisting, and changed offenders.
+> - **Immutable fail-closed gate analysis** — `check`, `gate`, and `plugin verify` support `--plugin-root` plus repeatable `--require-language`. Required language plugins must be present, checksum-verifiable, loadable, and structurally complete or the command exits non-zero with stable JSON diagnostics.
 > - **God-file root cause reporting** — gate failures list the exact added/removed/existing god files, their language, reason, score/threshold, and contributing dimensions such as LOC, imports, fan-in, fan-out, call edges, centrality, coupling, and complexity when available.
 > - **Actionable metric offenders** — cycles include exact edge chains and edge kinds; coupling, depth, complex/long/large files, duplicate code, and dead-code reports expose the files or functions behind the counter.
 > - **Agent-focused help** — `sentrux --help`, `sentrux check --help`, and `sentrux gate --help` now describe the commands and JSON paths agents should use to debug failed assessments.
@@ -21,8 +22,9 @@
 > Agent RCA shortcut:
 >
 > ```bash
-> sentrux gate --json --include-untracked <repo>
-> sentrux check --json --include-untracked <repo>
+> sentrux plugin verify --json --plugin-root <plugins> --require-language csharp
+> sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
+> sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 > ```
 >
 > See [docs/heurex-fork.md](docs/heurex-fork.md) for the fork release notes, JSON fields, and release workflow.
@@ -109,6 +111,7 @@ sentrux /path/to/project   # open GUI scanning a specific directory
 sentrux check .            # check rules (CI-friendly, exits 0 or 1)
 sentrux gate --save .      # save baseline before agent session
 sentrux gate .             # compare after — catches degradation
+sentrux plugin verify --json --plugin-root ./plugins --require-language csharp
 ```
 
 **Connect to your AI agent (optional)**
@@ -291,6 +294,7 @@ sentrux plugin list              # see installed plugins
 sentrux plugin add <name>        # install from registry
 sentrux plugin add-standard      # install all 52 languages
 sentrux plugin init my-lang      # scaffold a new language plugin
+sentrux plugin verify --json --plugin-root ./plugins --require-language csharp
 ```
 
 Architecture: the binary is a **generic platform** — all language knowledge lives in `plugin.toml` + `tags.scm` query files. Adding a new language requires zero Rust code.

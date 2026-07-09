@@ -18,6 +18,10 @@ jobs:
             platform: darwin-arm64
             ext: dylib
             cc_flags: "-arch arm64"
+          - os: macos-13
+            platform: darwin-x86_64
+            ext: dylib
+            cc_flags: "-arch x86_64"
           - os: ubuntu-latest
             platform: linux-x86_64
             ext: so
@@ -57,6 +61,7 @@ jobs:
             CXX=c++
           fi
           mkdir -p grammars-out
+          : > grammars-out/.expected-languages
 
           for plugin_dir in plugins/*/; do
             name=$(basename "$plugin_dir")
@@ -67,6 +72,7 @@ jobs:
               echo "::notice::Skipping $name — no grammar"
               continue
             fi
+            echo "$name" >> grammars-out/.expected-languages
 
             source=$(grep 'source = ' "$toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
             ref=$(grep 'ref = ' "$toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
@@ -145,14 +151,81 @@ jobs:
       - name: Package grammars bundle
         shell: bash
         run: |
+          set -euo pipefail
+          expected_file="grammars-out/.expected-languages"
+          if [ ! -s "$expected_file" ]; then
+            echo "::error::No expected grammar list was produced."
+            exit 1
+          fi
+          expected_count=$(wc -l < "$expected_file" | tr -d ' ')
+          built_count=$(find grammars-out -maxdepth 1 -type f -name '*.${{ matrix.ext }}' | wc -l | tr -d ' ')
+          if [ "$built_count" != "$expected_count" ]; then
+            echo "::error::Partial grammar bundle for ${{ matrix.platform }}: built $built_count of $expected_count expected grammars."
+            echo "Missing languages:"
+            comm -23 \
+              <(sort "$expected_file") \
+              <(find grammars-out -maxdepth 1 -type f -name '*.${{ matrix.ext }}' -exec basename {} .${{ matrix.ext }} \; | sort) || true
+            exit 1
+          fi
+
           # Create directory structure matching what ensure_grammars_installed expects:
           # <lang>/grammars/<platform>.<ext>
           mkdir -p bundle
-          for grammar in grammars-out/*.${{ matrix.ext }}; do
+          manifest="bundle/sentrux-grammar-manifest.json"
+          grammar_file="${{ matrix.platform }}.${{ matrix.ext }}"
+          {
+            echo "{"
+            echo "  \"schemaVersion\": 1,"
+            echo "  \"platform\": \"${{ matrix.platform }}\","
+            echo "  \"grammarFile\": \"$grammar_file\","
+            echo "  \"languages\": ["
+          } > "$manifest"
+          first=1
+
+          for grammar in $(find grammars-out -maxdepth 1 -type f -name '*.${{ matrix.ext }}' | sort); do
             name=$(basename "$grammar" .${{ matrix.ext }})
             mkdir -p "bundle/$name/grammars"
-            cp "$grammar" "bundle/$name/grammars/${{ matrix.platform }}.${{ matrix.ext }}"
+            mkdir -p "bundle/$name/queries"
+            cp "$grammar" "bundle/$name/grammars/$grammar_file"
+            if [ -f "plugins/$name/queries/tags.scm" ]; then
+              cp "plugins/$name/queries/tags.scm" "bundle/$name/queries/tags.scm"
+            else
+              : > "bundle/$name/queries/tags.scm"
+            fi
+            sha=$(sha256sum "$grammar" | awk '{print $1}')
+            awk -v key="${{ matrix.platform }}" -v sha="$sha" '
+              BEGIN { in_checksums = 0; inserted = 0 }
+              /^\[checksums\]/ {
+                print
+                print key " = \"" sha "\""
+                inserted = 1
+                in_checksums = 1
+                next
+              }
+              /^\[.*\]/ { in_checksums = 0 }
+              in_checksums && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { next }
+              { print }
+              END {
+                if (!inserted) {
+                  print ""
+                  print "[checksums]"
+                  print key " = \"" sha "\""
+                }
+              }
+            ' "plugins/$name/plugin.toml" > "bundle/$name/plugin.toml"
+
+            if [ "$first" -eq 0 ]; then
+              echo "," >> "$manifest"
+            fi
+            first=0
+            printf '    {"language":"%s","grammar":"%s","sha256":"%s","path":"%s/grammars/%s"}' \
+              "$name" "$grammar_file" "$sha" "$name" "$grammar_file" >> "$manifest"
           done
+          {
+            echo
+            echo "  ]"
+            echo "}"
+          } >> "$manifest"
 
           cd bundle
           tar czf "../grammars-${{ matrix.platform }}.tar.gz" */
@@ -175,14 +248,31 @@ jobs:
     steps:
       - name: Download all platform bundles
         uses: actions/download-artifact@v4
-        continue-on-error: true
+
+      - name: Verify complete grammar asset matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          for asset in \
+            grammars-darwin-arm64/grammars-darwin-arm64.tar.gz \
+            grammars-darwin-x86_64/grammars-darwin-x86_64.tar.gz \
+            grammars-linux-x86_64/grammars-linux-x86_64.tar.gz \
+            grammars-linux-aarch64/grammars-linux-aarch64.tar.gz \
+            grammars-windows-x86_64/grammars-windows-x86_64.tar.gz
+          do
+            test -f "$asset" || {
+              echo "::error::Missing grammar release asset: $asset"
+              exit 1
+            }
+          done
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
           files: |
             grammars-darwin-arm64/grammars-darwin-arm64.tar.gz
+            grammars-darwin-x86_64/grammars-darwin-x86_64.tar.gz
             grammars-linux-x86_64/grammars-linux-x86_64.tar.gz
             grammars-linux-aarch64/grammars-linux-aarch64.tar.gz
             grammars-windows-x86_64/grammars-windows-x86_64.tar.gz

@@ -31,12 +31,18 @@ stamp automatically.
 For a failed gate, agents should start with:
 
 ```bash
-sentrux gate --json --include-untracked <repo>
+sentrux plugin verify --json --plugin-root <plugins> --require-language csharp
+sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 ```
 
 This compares the current scan against `.sentrux/baseline.json` and emits the
 before/after metric counts, hard degradations, and added/removed/current
 offenders for actionable metrics.
+
+`--plugin-root` should point at a provisioned plugin directory. Sentrux verifies
+that directory and reports its inventory; it does not download, repair, or
+install plugins during `check`, `gate`, or `plugin verify`. Praxis/scaffold
+provisioning owns download and installation.
 
 Use `--include-untracked` when debugging pre-commit gate failures or brand-new
 files that have not been `git add`-ed yet. Without the flag, `gate` preserves
@@ -46,7 +52,7 @@ For a current structural assessment that includes untracked worktree files,
 agents should run:
 
 ```bash
-sentrux check --json --include-untracked <repo>
+sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 ```
 
 This reports the current rules result, scan options, C# reference summary, and
@@ -58,6 +64,11 @@ The fork changes Sentrux reporting from aggregate counters to root-cause
 diagnostics. The most important JSON paths are:
 
 - `gate --json`: `degradations[]`
+- `gate --json`: `analysis.complete`
+- `gate --json`: `analysis.fatalDiagnostics[]`
+- `gate --json`: `analysis.inventory.languages[]`
+- `gate --json`: `analysis.structuralCoverage.requiredLanguages[]`
+- `gate --json`: `analysis.structuralCoverage.unparsedCodeFiles[]`
 - `gate --json`: `scan.include_untracked`
 - `gate --json`: `hardMetricFailureDespiteQualityImprovement`
 - `gate --json`: `metrics.godFiles.addedGodFiles[]`
@@ -67,6 +78,11 @@ diagnostics. The most important JSON paths are:
 - `gate --json`: `metrics.coupling.offenders.added[]`
 - `gate --json`: `metrics.cycles.cycles.added[]`
 - `check --json`: `metrics.godFiles.files[]`
+- `check --json`: `analysis.complete`
+- `check --json`: `analysis.fatalDiagnostics[]`
+- `check --json`: `analysis.inventory.languages[]`
+- `check --json`: `analysis.structuralCoverage.requiredLanguages[]`
+- `check --json`: `analysis.structuralCoverage.unparsedCodeFiles[]`
 - `check --json`: `metrics.coupling.problemEdges[]`
 - `check --json`: `metrics.cycles.cycles[]`
 - `check --json`: `metrics.depth.deepestFiles[]`
@@ -87,7 +103,41 @@ inference, or resolver fallback.
 
 The text output mirrors the JSON RCA for operators who are reading logs.
 
+Stable fatal diagnostic codes include:
+
+- `SENTRUX-LANGUAGE-PLUGIN-MISSING`
+- `SENTRUX-PLUGIN-MANIFEST-MISSING`
+- `SENTRUX-PLUGIN-MANIFEST-INVALID`
+- `SENTRUX-GRAMMAR-MISSING`
+- `SENTRUX-GRAMMAR-CHECKSUM-MISSING`
+- `SENTRUX-GRAMMAR-CHECKSUM-MISMATCH`
+- `SENTRUX-GRAMMAR-LOAD-FAILED`
+- `SENTRUX-GRAMMAR-ABI-INCOMPATIBLE`
+- `SENTRUX-QUERY-MISSING`
+- `SENTRUX-QUERY-INVALID`
+- `SENTRUX-STRUCTURAL-COVERAGE-INCOMPLETE`
+- `SENTRUX-GIT-UNTRACKED-ENUM-FAILED`
+
 ## Changelog
+
+### Unreleased
+
+- `check`, `gate`, and `plugin verify` now support immutable plugin-root
+  verification with `--plugin-root` and repeatable `--require-language`.
+- Required language plugins must be present, include a checksum for the current
+  platform grammar, pass SHA-256 verification, load successfully, and compile
+  their tree-sitter query. Failures are emitted under
+  `analysis.fatalDiagnostics[]` with stable diagnostic codes.
+- `check --json` and `gate --json` include an `analysis` envelope with plugin
+  root source, inventory, required languages, structural coverage, fatal
+  diagnostics, warnings, and explicit mutation policy.
+- `gate` fails closed and refuses to save or compare a baseline when required
+  structural coverage is incomplete.
+- `--include-untracked` now fails closed if Git untracked-file enumeration
+  fails instead of silently treating the untracked set as empty.
+- Grammar release bundles now include plugin manifests, queries, a grammar
+  release manifest, and per-platform SHA-256 checksum entries; the workflow
+  fails if any supported platform bundle is missing or partial.
 
 ### 0.5.13
 
@@ -119,7 +169,10 @@ Patch release checklist for this fork:
 6. Commit the change on `main`.
 7. Push `main` to `origin`.
 8. Tag `v<version>` and push the tag.
-9. The GitHub `Release` workflow builds fork-named release artifacts and names
+9. Confirm the grammar workflow attaches the full matrix:
+   `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-aarch64`, and
+   `windows-x86_64`.
+10. The GitHub `Release` workflow builds fork-named release artifacts and names
    the release `Sentrux v<version> (Heurex fork)`.
 
 Do not hard-code local release directories in repository files. Local tool

@@ -12,6 +12,7 @@ use sentrux_core::analysis;
 use sentrux_core::app;
 use sentrux_core::core;
 use sentrux_core::metrics;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -63,17 +64,24 @@ Live codebase visualization and structural quality gate (Heurex fork).
 
 Agent quick start:
   Current structural assessment:
-    sentrux check --json --include-untracked <repo>
+    sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 
   Baseline regression / gate failure:
-    sentrux gate --json --include-untracked <repo>
+    sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
+
+  Verify provisioned plugins before running a Praxis/scaffold gate:
+    sentrux plugin verify --json --plugin-root <plugins> --require-language csharp
 
   Create or refresh a baseline intentionally:
-    sentrux gate --save --json <repo>
+    sentrux gate --save --json --plugin-root <plugins> --require-language csharp <repo>
 
 Important JSON paths for agents:
   check --json:
     pass
+    analysis.complete
+    analysis.fatalDiagnostics[]
+    analysis.inventory.languages[]
+    analysis.structuralCoverage.unparsedCodeFiles[]
     scan.include_untracked
     violations[]
     metrics.godFiles.files[]
@@ -84,6 +92,10 @@ Important JSON paths for agents:
 
   gate --json:
     passed
+    analysis.complete
+    analysis.fatalDiagnostics[]
+    analysis.inventory.languages[]
+    analysis.structuralCoverage.unparsedCodeFiles[]
     scan.include_untracked
     degradations[]
     hardMetricFailureDespiteQualityImprovement
@@ -94,7 +106,7 @@ Important JSON paths for agents:
 
 Exit codes:
   0  no blocking assessment or gate failure
-  1  rules failed, structural degradation detected, scan failed, or baseline missing
+  1  rules failed, structural degradation detected, incomplete analysis, scan failed, or baseline missing
   2  invalid command line usage
 
 Config and state files:
@@ -103,11 +115,12 @@ Config and state files:
   .sentrux/baseline.json    baseline for `gate`
 
 Tip: when debugging why a gate failed before commit, prefer
-`sentrux gate --json --include-untracked <repo>` first so brand-new files are
-part of the regression scan. If the baseline is old and lacks offender details,
-run `sentrux check --json --include-untracked <repo>` to inspect the current
-offenders, then refresh the baseline only after the operator decides the new
-structure is acceptable.",
+`sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>`
+first so brand-new files are part of the regression scan and required language
+analysis is proven complete. If the baseline is old and lacks offender details,
+run `sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>`
+to inspect the current offenders, then refresh the baseline only after the
+operator decides the new structure is acceptable.",
     version = version_string(),
     arg_required_else_help = false,
 )]
@@ -131,7 +144,7 @@ enum Command {
 Enforce architectural rules defined in .sentrux/rules.toml.
 
 Agent command:
-  sentrux check --json --include-untracked <repo>
+  sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 
 Use `check` when the agent needs the current assessment, independent of any
 saved baseline. This is the best command for answering: what files or edges are
@@ -139,6 +152,11 @@ currently causing Sentrux to fail?
 
 Important JSON paths:
   pass
+  analysis.complete
+  analysis.fatalDiagnostics[]
+  analysis.inventory.languages[]
+  analysis.structuralCoverage.requiredLanguages[]
+  analysis.structuralCoverage.unparsedCodeFiles[]
   rules_checked
   scan.include_untracked
   csharp_references.unresolved
@@ -165,7 +183,7 @@ Typical debug flow:
 
 Exit code:
   0  all checked rules passed
-  1  one or more rules failed, or scanning failed
+  1  one or more rules failed, analysis was incomplete, or scanning failed
   2  invalid command line usage
 
 EXCLUSIONS (.sentruxignore) — Heurex fork:
@@ -187,6 +205,14 @@ This is file-based; there is no CLI flag for it.")]
         #[arg(long)]
         include_untracked: bool,
 
+        /// Explicit provisioned plugin root to use for immutable analysis
+        #[arg(long, value_name = "DIR")]
+        plugin_root: Option<String>,
+
+        /// Language that must have a verified plugin and complete structural coverage
+        #[arg(long = "require-language", value_name = "LANG")]
+        require_languages: Vec<String>,
+
         /// Emit machine-readable JSON diagnostics
         #[arg(long)]
         json: bool,
@@ -198,7 +224,7 @@ Structural regression gate: compare the current scan against
 .sentrux/baseline.json.
 
 Agent command for a gate failure:
-  sentrux gate --json --include-untracked <repo>
+  sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>
 
 Use `gate` when the agent needs to explain a regression relative to the saved
 baseline. It is the best command for answering: what changed since the baseline
@@ -206,6 +232,11 @@ that made Sentrux fail?
 
 Important JSON paths:
   passed
+  analysis.complete
+  analysis.fatalDiagnostics[]
+  analysis.inventory.languages[]
+  analysis.structuralCoverage.requiredLanguages[]
+  analysis.structuralCoverage.unparsedCodeFiles[]
   scan.include_untracked
   quality.before / quality.after / quality.delta
   degradations[]
@@ -223,22 +254,22 @@ Important JSON paths:
   metrics.complexFunctions.functions.current[]
 
 Typical debug flow:
-  1. Run `sentrux gate --json --include-untracked <repo>` when debugging a
-     pre-commit or worktree gate failure.
+  1. Run `sentrux gate --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>`
+     when debugging a pre-commit or worktree gate failure.
   2. Inspect `degradations[]` to identify the failing hard metric.
   3. Inspect the matching `added` offender list for the root cause.
   4. If `baselineDetailsAvailable` is false for a metric, the baseline was
      created by an older Sentrux that only stored aggregate counts. In that
-     case run `sentrux check --json --include-untracked <repo>` to inspect the
-     current offenders, then refresh the baseline only after the operator
-     accepts the new structure.
+     case run `sentrux check --json --include-untracked --plugin-root <plugins> --require-language csharp <repo>`
+     to inspect the current offenders, then refresh the baseline only after the
+     operator accepts the new structure.
 
 Create or refresh a baseline intentionally:
-  sentrux gate --save --json <repo>
+  sentrux gate --save --json --plugin-root <plugins> --require-language csharp <repo>
 
 Exit code:
   0  current structure did not regress against the baseline
-  1  degradation detected, baseline missing/unreadable, or scan failed
+  1  degradation detected, incomplete analysis, baseline missing/unreadable, or scan failed
   2  invalid command line usage")]
     Gate {
         /// Save current metrics as the new baseline
@@ -248,6 +279,14 @@ Exit code:
         /// Include untracked, non-ignored Git worktree files in the scan
         #[arg(long)]
         include_untracked: bool,
+
+        /// Explicit provisioned plugin root to use for immutable analysis
+        #[arg(long, value_name = "DIR")]
+        plugin_root: Option<String>,
+
+        /// Language that must have a verified plugin and complete structural coverage
+        #[arg(long = "require-language", value_name = "LANG")]
+        require_languages: Vec<String>,
 
         /// Emit machine-readable JSON diagnostics
         #[arg(long)]
@@ -343,6 +382,21 @@ enum PluginAction {
         /// Path to the plugin directory
         dir: String,
     },
+
+    /// Verify a provisioned plugin root without downloading or mutating it
+    Verify {
+        /// Emit machine-readable JSON diagnostics
+        #[arg(long)]
+        json: bool,
+
+        /// Explicit provisioned plugin root to verify
+        #[arg(long, value_name = "DIR")]
+        plugin_root: Option<String>,
+
+        /// Language that must be present, checksum-verified, loadable, and query-valid
+        #[arg(long = "require-language", value_name = "LANG")]
+        require_languages: Vec<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -350,21 +404,26 @@ enum PluginAction {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> eframe::Result<()> {
-    // Initialize license + Pro plugin (reads ~/.sentrux/license.key, loads pro.dylib if valid)
-    sentrux_core::license::init();
-
-    // Step 1: Download missing grammar binaries (may overwrite configs with old versions)
-    ensure_grammars_installed();
-
-    // Step 2: Sync embedded plugin configs LAST — always wins over downloaded configs.
-    // This ensures configs match the binary version even if the grammar tarball
-    // included old plugin.toml/tags.scm files.
-    sentrux_core::analysis::plugin::sync_embedded_plugins();
-
-    // Non-blocking update check (once per day, background thread)
-    app::update_check::check_for_updates_async(env!("CARGO_PKG_VERSION"));
-
     let cli = Cli::parse();
+    let immutable_analysis = command_requires_immutable_analysis(&cli.command);
+
+    if immutable_analysis {
+        std::env::set_var(sentrux_core::analysis::plugin::IMMUTABLE_ANALYSIS_ENV, "1");
+    } else {
+        // Initialize license + Pro plugin (reads ~/.sentrux/license.key, loads pro.dylib if valid)
+        sentrux_core::license::init();
+
+        // Step 1: Download missing grammar binaries (may overwrite configs with old versions)
+        ensure_grammars_installed();
+
+        // Step 2: Sync embedded plugin configs LAST — always wins over downloaded configs.
+        // This ensures configs match the binary version even if the grammar tarball
+        // included old plugin.toml/tags.scm files.
+        sentrux_core::analysis::plugin::sync_embedded_plugins();
+
+        // Non-blocking update check (once per day, background thread)
+        app::update_check::check_for_updates_async(env!("CARGO_PKG_VERSION"));
+    }
 
     // Hidden --mcp flag for backward compat with MCP client configs
     if cli.mcp_flag {
@@ -376,17 +435,32 @@ pub fn run() -> eframe::Result<()> {
         Some(Command::Check {
             path,
             include_untracked,
+            plugin_root,
+            require_languages,
             json,
         }) => {
-            std::process::exit(run_check(&path, include_untracked, json));
+            std::process::exit(run_check(
+                &path,
+                include_untracked,
+                json,
+                CliAnalysisOptions::new(plugin_root, require_languages),
+            ));
         }
         Some(Command::Gate {
             save,
             include_untracked,
+            plugin_root,
+            require_languages,
             json,
             path,
         }) => {
-            std::process::exit(run_gate(&path, save, include_untracked, json));
+            std::process::exit(run_gate(
+                &path,
+                save,
+                include_untracked,
+                json,
+                CliAnalysisOptions::new(plugin_root, require_languages),
+            ));
         }
         Some(Command::Mcp) => {
             app::mcp_server::run_mcp_server(None);
@@ -410,6 +484,813 @@ pub fn run() -> eframe::Result<()> {
         }
         Some(Command::Scan { path }) => run_gui(path),
         None => run_gui(cli.path),
+    }
+}
+
+fn command_requires_immutable_analysis(command: &Option<Command>) -> bool {
+    matches!(
+        command,
+        Some(Command::Check { .. })
+            | Some(Command::Gate { .. })
+            | Some(Command::Plugin {
+                action: PluginAction::Verify { .. },
+            })
+    )
+}
+
+#[derive(Debug, Clone)]
+struct CliAnalysisOptions {
+    plugin_root: Option<String>,
+    require_languages: Vec<String>,
+}
+
+impl CliAnalysisOptions {
+    fn new(plugin_root: Option<String>, require_languages: Vec<String>) -> Self {
+        let mut seen = std::collections::BTreeSet::new();
+        let require_languages = require_languages
+            .into_iter()
+            .map(|lang| lang.trim().to_ascii_lowercase())
+            .filter(|lang| !lang.is_empty())
+            .filter(|lang| seen.insert(lang.clone()))
+            .collect();
+        Self {
+            plugin_root,
+            require_languages,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AnalysisDiagnostic {
+    code: String,
+    severity: String,
+    message: String,
+    language: Option<String>,
+    path: Option<String>,
+    expected_grammar: Option<String>,
+    plugin_root: Option<String>,
+    details: serde_json::Value,
+}
+
+impl AnalysisDiagnostic {
+    fn fatal(code: &str, message: impl Into<String>) -> Self {
+        Self::new(code, "fatal", message)
+    }
+
+    fn warning(code: &str, message: impl Into<String>) -> Self {
+        Self::new(code, "warning", message)
+    }
+
+    fn new(code: &str, severity: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_string(),
+            severity: severity.to_string(),
+            message: message.into(),
+            language: None,
+            path: None,
+            expected_grammar: None,
+            plugin_root: None,
+            details: serde_json::Value::Null,
+        }
+    }
+
+    fn language(mut self, language: impl Into<String>) -> Self {
+        self.language = Some(language.into());
+        self
+    }
+
+    fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    fn expected_grammar(mut self, expected_grammar: impl Into<String>) -> Self {
+        self.expected_grammar = Some(expected_grammar.into());
+        self
+    }
+
+    fn plugin_root(mut self, plugin_root: Option<&Path>) -> Self {
+        self.plugin_root = plugin_root.map(|path| path.display().to_string());
+        self
+    }
+
+    fn details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
+    }
+
+    fn is_fatal(&self) -> bool {
+        self.severity == "fatal"
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let mut object = serde_json::Map::new();
+        object.insert("code".to_string(), serde_json::json!(&self.code));
+        object.insert("severity".to_string(), serde_json::json!(&self.severity));
+        object.insert("message".to_string(), serde_json::json!(&self.message));
+        if let Some(language) = &self.language {
+            object.insert("language".to_string(), serde_json::json!(language));
+        }
+        if let Some(path) = &self.path {
+            object.insert("path".to_string(), serde_json::json!(path));
+        }
+        if let Some(expected_grammar) = &self.expected_grammar {
+            object.insert(
+                "expectedGrammar".to_string(),
+                serde_json::json!(expected_grammar),
+            );
+        }
+        if let Some(plugin_root) = &self.plugin_root {
+            object.insert("pluginRoot".to_string(), serde_json::json!(plugin_root));
+        }
+        if !self.details.is_null() {
+            object.insert("details".to_string(), self.details.clone());
+        }
+        serde_json::Value::Object(object)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PluginInventoryItem {
+    language: String,
+    status: String,
+    path: String,
+    display_name: Option<String>,
+    version: Option<String>,
+    extensions: Vec<String>,
+    expected_grammar: String,
+    grammar_path: Option<String>,
+    grammar_sha256: Option<String>,
+    checksum_expected: Option<String>,
+    checksum_actual: Option<String>,
+    checksum_verified: Option<bool>,
+    diagnostics: Vec<AnalysisDiagnostic>,
+}
+
+impl PluginInventoryItem {
+    fn new(language: &str, plugin_dir: &Path) -> Self {
+        Self {
+            language: language.to_string(),
+            status: "unknown".to_string(),
+            path: plugin_dir.display().to_string(),
+            display_name: None,
+            version: None,
+            extensions: Vec::new(),
+            expected_grammar: sentrux_core::analysis::plugin::PluginManifest::grammar_filename()
+                .to_string(),
+            grammar_path: None,
+            grammar_sha256: None,
+            checksum_expected: None,
+            checksum_actual: None,
+            checksum_verified: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn finalize_status(&mut self) {
+        if self.diagnostics.iter().any(AnalysisDiagnostic::is_fatal) {
+            self.status = "failed".to_string();
+        } else if self.status == "unknown" {
+            self.status = "ok".to_string();
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "language": &self.language,
+            "status": &self.status,
+            "path": &self.path,
+            "displayName": &self.display_name,
+            "version": &self.version,
+            "extensions": &self.extensions,
+            "expectedGrammar": &self.expected_grammar,
+            "grammarPath": &self.grammar_path,
+            "grammarSha256": &self.grammar_sha256,
+            "checksumExpected": &self.checksum_expected,
+            "checksumActual": &self.checksum_actual,
+            "checksumVerified": self.checksum_verified,
+            "diagnostics": self.diagnostics.iter().map(AnalysisDiagnostic::to_json).collect::<Vec<_>>()
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AnalysisContext {
+    plugin_root: Option<PathBuf>,
+    plugin_root_source: String,
+    required_languages: Vec<String>,
+    inventory: Vec<PluginInventoryItem>,
+    fatal_diagnostics: Vec<AnalysisDiagnostic>,
+    warnings: Vec<AnalysisDiagnostic>,
+}
+
+impl AnalysisContext {
+    fn complete_without_coverage(&self) -> bool {
+        self.fatal_diagnostics.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StructuralCoverage {
+    total_files: u32,
+    code_files: usize,
+    parsed_files: usize,
+    unparsed_files: usize,
+    parse_coverage: f64,
+    function_count: usize,
+    class_count: usize,
+    import_edges: usize,
+    call_edges: usize,
+    required_languages: Vec<serde_json::Value>,
+    unparsed_code_files: Vec<serde_json::Value>,
+    fatal_diagnostics: Vec<AnalysisDiagnostic>,
+}
+
+impl StructuralCoverage {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "totalFiles": self.total_files,
+            "codeFiles": self.code_files,
+            "parsedFiles": self.parsed_files,
+            "unparsedFiles": self.unparsed_files,
+            "parseCoverage": self.parse_coverage,
+            "functionCount": self.function_count,
+            "classCount": self.class_count,
+            "importEdges": self.import_edges,
+            "callEdges": self.call_edges,
+            "requiredLanguages": &self.required_languages,
+            "unparsedCodeFiles": &self.unparsed_code_files
+        })
+    }
+}
+
+fn prepare_analysis_context(options: &CliAnalysisOptions) -> AnalysisContext {
+    let (plugin_root, plugin_root_source) = select_plugin_root(options.plugin_root.as_deref());
+    let mut context = AnalysisContext {
+        plugin_root,
+        plugin_root_source,
+        required_languages: options.require_languages.clone(),
+        inventory: Vec::new(),
+        fatal_diagnostics: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    if context.plugin_root_source == "default" {
+        context.warnings.push(
+            AnalysisDiagnostic::warning(
+                "SENTRUX-PLUGIN-ROOT-DEFAULTED",
+                "No --plugin-root or SENTRUX_PLUGIN_ROOT was provided; using the default user plugin root.",
+            )
+            .plugin_root(context.plugin_root.as_deref()),
+        );
+    }
+
+    let Some(root) = context.plugin_root.clone() else {
+        if !context.required_languages.is_empty() {
+            context.fatal_diagnostics.push(AnalysisDiagnostic::fatal(
+                "SENTRUX-PLUGIN-ROOT-MISSING",
+                "No plugin root is available, but required languages were requested.",
+            ));
+        }
+        return context;
+    };
+
+    if !root.is_dir() {
+        let diagnostic = AnalysisDiagnostic::fatal(
+            "SENTRUX-PLUGIN-ROOT-MISSING",
+            format!(
+                "Plugin root does not exist or is not a directory: {}",
+                root.display()
+            ),
+        )
+        .plugin_root(Some(&root));
+        if context.required_languages.is_empty() {
+            context.warnings.push(AnalysisDiagnostic {
+                severity: "warning".to_string(),
+                ..diagnostic
+            });
+        } else {
+            context.fatal_diagnostics.push(diagnostic);
+        }
+        return context;
+    }
+
+    let languages = if context.required_languages.is_empty() {
+        discover_plugin_languages(&root)
+    } else {
+        context.required_languages.clone()
+    };
+
+    for language in languages {
+        let strict = context
+            .required_languages
+            .iter()
+            .any(|lang| lang == &language);
+        let item = verify_plugin_language(&root, &language, strict);
+        if strict {
+            for diagnostic in &item.diagnostics {
+                if diagnostic.is_fatal() {
+                    context.fatal_diagnostics.push(diagnostic.clone());
+                } else {
+                    context.warnings.push(diagnostic.clone());
+                }
+            }
+        }
+        context.inventory.push(item);
+    }
+
+    context
+}
+
+fn apply_cli_plugin_root(options: &CliAnalysisOptions) {
+    if let Some(root) = options
+        .plugin_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    {
+        std::env::set_var(sentrux_core::analysis::plugin::PLUGIN_ROOT_ENV, root);
+    }
+}
+
+fn select_plugin_root(cli_root: Option<&str>) -> (Option<PathBuf>, String) {
+    if let Some(root) = cli_root.map(str::trim).filter(|root| !root.is_empty()) {
+        return (Some(PathBuf::from(root)), "cli".to_string());
+    }
+    if let Some(root) =
+        std::env::var_os(sentrux_core::analysis::plugin::PLUGIN_ROOT_ENV).filter(|v| !v.is_empty())
+    {
+        return (Some(PathBuf::from(root)), "env".to_string());
+    }
+    (
+        sentrux_core::analysis::plugin::default_plugins_dir(),
+        "default".to_string(),
+    )
+}
+
+fn discover_plugin_languages(root: &Path) -> Vec<String> {
+    let mut languages = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && path.join("plugin.toml").exists() {
+                if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                    languages.push(name.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    languages.sort();
+    languages
+}
+
+fn verify_plugin_language(root: &Path, language: &str, strict: bool) -> PluginInventoryItem {
+    let plugin_dir = root.join(language);
+    let mut item = PluginInventoryItem::new(language, &plugin_dir);
+    let expected_grammar =
+        sentrux_core::analysis::plugin::PluginManifest::grammar_filename().to_string();
+
+    if !plugin_dir.is_dir() {
+        item.status = "missingPlugin".to_string();
+        item.diagnostics.push(
+            AnalysisDiagnostic::fatal(
+                "SENTRUX-LANGUAGE-PLUGIN-MISSING",
+                format!("Required language plugin is missing: {language}"),
+            )
+            .language(language)
+            .path(plugin_dir.display().to_string())
+            .expected_grammar(expected_grammar)
+            .plugin_root(Some(root)),
+        );
+        item.finalize_status();
+        return item;
+    }
+
+    let manifest_path = plugin_dir.join("plugin.toml");
+    if !manifest_path.exists() {
+        item.status = "missingManifest".to_string();
+        item.diagnostics.push(
+            AnalysisDiagnostic::fatal(
+                "SENTRUX-PLUGIN-MANIFEST-MISSING",
+                format!("Plugin manifest is missing for language {language}."),
+            )
+            .language(language)
+            .path(manifest_path.display().to_string())
+            .plugin_root(Some(root)),
+        );
+        item.finalize_status();
+        return item;
+    }
+
+    let manifest = match sentrux_core::analysis::plugin::PluginManifest::load(&plugin_dir) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            item.status = "manifestInvalid".to_string();
+            item.diagnostics.push(
+                AnalysisDiagnostic::fatal(
+                    "SENTRUX-PLUGIN-MANIFEST-INVALID",
+                    format!("Plugin manifest is invalid for language {language}: {error}"),
+                )
+                .language(language)
+                .path(manifest_path.display().to_string())
+                .plugin_root(Some(root)),
+            );
+            item.finalize_status();
+            return item;
+        }
+    };
+
+    item.display_name = Some(manifest.plugin.display_name.clone());
+    item.version = Some(manifest.plugin.version.clone());
+    item.extensions = manifest.plugin.extensions.clone();
+
+    let query_path = plugin_dir.join("queries").join("tags.scm");
+    let query_src = match std::fs::read_to_string(&query_path) {
+        Ok(query_src) => query_src,
+        Err(error) => {
+            item.status = "missingQuery".to_string();
+            item.diagnostics.push(
+                AnalysisDiagnostic::fatal(
+                    "SENTRUX-QUERY-MISSING",
+                    format!("Query file is missing for language {language}: {error}"),
+                )
+                .language(language)
+                .path(query_path.display().to_string())
+                .plugin_root(Some(root)),
+            );
+            item.finalize_status();
+            return item;
+        }
+    };
+
+    if let Err(error) = manifest.validate_query_captures(&query_src) {
+        item.status = "queryInvalid".to_string();
+        item.diagnostics.push(
+            AnalysisDiagnostic::fatal(
+                "SENTRUX-QUERY-INVALID",
+                format!("Query captures are invalid for language {language}: {error}"),
+            )
+            .language(language)
+            .path(query_path.display().to_string())
+            .plugin_root(Some(root)),
+        );
+    }
+
+    if expected_grammar == "unsupported" {
+        item.status = "unsupportedPlatform".to_string();
+        item.diagnostics.push(
+            AnalysisDiagnostic::fatal(
+                "SENTRUX-GRAMMAR-UNSUPPORTED-PLATFORM",
+                "This platform has no supported grammar filename.",
+            )
+            .language(language)
+            .plugin_root(Some(root)),
+        );
+        item.finalize_status();
+        return item;
+    }
+
+    let grammar_path = plugin_dir.join("grammars").join(&expected_grammar);
+    item.grammar_path = Some(grammar_path.display().to_string());
+    if !grammar_path.exists() {
+        item.status = "missingGrammar".to_string();
+        item.diagnostics.push(
+            AnalysisDiagnostic::fatal(
+                "SENTRUX-GRAMMAR-MISSING",
+                format!(
+                    "Grammar binary is missing for required language {language}: {}",
+                    grammar_path.display()
+                ),
+            )
+            .language(language)
+            .path(grammar_path.display().to_string())
+            .expected_grammar(expected_grammar)
+            .plugin_root(Some(root)),
+        );
+        item.finalize_status();
+        return item;
+    }
+
+    match sentrux_core::analysis::plugin::grammar_sha256(&grammar_path) {
+        Ok(actual) => {
+            item.grammar_sha256 = Some(actual.clone());
+            item.checksum_actual = Some(actual.clone());
+            let expected =
+                sentrux_core::analysis::plugin::manifest_checksum_for_platform(&manifest)
+                    .map(str::trim)
+                    .filter(|hash| !hash.is_empty())
+                    .map(str::to_ascii_lowercase);
+            item.checksum_expected = expected.clone();
+            match expected {
+                Some(expected) if expected == actual => item.checksum_verified = Some(true),
+                Some(expected) => {
+                    item.checksum_verified = Some(false);
+                    item.status = "checksumInvalid".to_string();
+                    item.diagnostics.push(
+                        AnalysisDiagnostic::fatal(
+                            "SENTRUX-GRAMMAR-CHECKSUM-MISMATCH",
+                            format!(
+                                "Grammar checksum mismatch for {language}: expected {expected}, got {actual}."
+                            ),
+                        )
+                        .language(language)
+                        .path(grammar_path.display().to_string())
+                        .expected_grammar(
+                            sentrux_core::analysis::plugin::PluginManifest::grammar_filename(),
+                        )
+                        .plugin_root(Some(root))
+                        .details(serde_json::json!({
+                            "expectedSha256": expected,
+                            "actualSha256": actual
+                        })),
+                    );
+                }
+                None if strict => {
+                    item.checksum_verified = Some(false);
+                    item.status = "checksumMissing".to_string();
+                    item.diagnostics.push(
+                        AnalysisDiagnostic::fatal(
+                            "SENTRUX-GRAMMAR-CHECKSUM-MISSING",
+                            format!(
+                                "Grammar checksum is missing for required language {language}."
+                            ),
+                        )
+                        .language(language)
+                        .path(manifest_path.display().to_string())
+                        .expected_grammar(
+                            sentrux_core::analysis::plugin::PluginManifest::grammar_filename(),
+                        )
+                        .plugin_root(Some(root))
+                        .details(serde_json::json!({
+                            "actualSha256": actual
+                        })),
+                    );
+                }
+                None => item.checksum_verified = None,
+            }
+        }
+        Err(error) => {
+            item.status = "checksumFailed".to_string();
+            item.diagnostics.push(
+                AnalysisDiagnostic::fatal(
+                    "SENTRUX-GRAMMAR-CHECKSUM-FAILED",
+                    format!("Failed to compute grammar checksum for {language}: {error}"),
+                )
+                .language(language)
+                .path(grammar_path.display().to_string())
+                .plugin_root(Some(root)),
+            );
+            item.finalize_status();
+            return item;
+        }
+    }
+
+    let symbol_name = manifest
+        .grammar
+        .symbol_name
+        .as_deref()
+        .unwrap_or(&manifest.plugin.name);
+    match sentrux_core::analysis::plugin::load_grammar_dynamic(&grammar_path, symbol_name) {
+        Ok(grammar) => {
+            #[allow(deprecated)]
+            let abi = grammar.version();
+            if abi < manifest.grammar.abi_version as usize {
+                item.status = "abiInvalid".to_string();
+                item.diagnostics.push(
+                    AnalysisDiagnostic::fatal(
+                        "SENTRUX-GRAMMAR-ABI-INCOMPATIBLE",
+                        format!(
+                            "Grammar ABI version {abi} is lower than required {} for language {language}.",
+                            manifest.grammar.abi_version
+                        ),
+                    )
+                    .language(language)
+                    .path(grammar_path.display().to_string())
+                    .plugin_root(Some(root)),
+                );
+            }
+            if let Err(error) = tree_sitter::Query::new(&grammar, &query_src) {
+                item.status = "queryInvalid".to_string();
+                item.diagnostics.push(
+                    AnalysisDiagnostic::fatal(
+                        "SENTRUX-QUERY-INVALID",
+                        format!("Tree-sitter query failed to compile for language {language}: {error:?}"),
+                    )
+                    .language(language)
+                    .path(query_path.display().to_string())
+                    .plugin_root(Some(root)),
+                );
+            }
+        }
+        Err(error) => {
+            item.status = "loadFailed".to_string();
+            item.diagnostics.push(
+                AnalysisDiagnostic::fatal(
+                    "SENTRUX-GRAMMAR-LOAD-FAILED",
+                    format!("Grammar failed to load for language {language}: {error}"),
+                )
+                .language(language)
+                .path(grammar_path.display().to_string())
+                .plugin_root(Some(root)),
+            );
+        }
+    }
+
+    item.finalize_status();
+    item
+}
+
+fn compute_structural_coverage(
+    snapshot: &core::snapshot::Snapshot,
+    required_languages: &[String],
+) -> StructuralCoverage {
+    let files = core::snapshot::flatten_files_ref(&snapshot.root);
+    let mut code_files = 0usize;
+    let mut parsed_files = 0usize;
+    let mut function_count = 0usize;
+    let mut class_count = 0usize;
+    let mut unparsed_code_files = Vec::new();
+
+    for file in &files {
+        if file.lang.is_empty() || file.lang == "unknown" {
+            continue;
+        }
+        code_files += 1;
+        if let Some(sa) = &file.sa {
+            parsed_files += 1;
+            function_count += sa.functions.as_ref().map_or(0, Vec::len);
+            class_count += sa.cls.as_ref().map_or(0, Vec::len);
+        } else {
+            unparsed_code_files.push(serde_json::json!({
+                "path": file.path,
+                "language": file.lang,
+                "lines": file.lines,
+                "reason": "structural parser did not produce an AST for this file"
+            }));
+        }
+    }
+
+    let mut required_details = Vec::new();
+    let mut fatal_diagnostics = Vec::new();
+    for language in required_languages {
+        let mut files_for_language = 0usize;
+        let mut parsed_for_language = 0usize;
+        let mut unparsed_for_language = Vec::new();
+        for file in &files {
+            if &file.lang != language {
+                continue;
+            }
+            files_for_language += 1;
+            if file.sa.is_some() {
+                parsed_for_language += 1;
+            } else {
+                unparsed_for_language.push(file.path.clone());
+            }
+        }
+        let complete = unparsed_for_language.is_empty();
+        if !complete {
+            fatal_diagnostics.push(
+                AnalysisDiagnostic::fatal(
+                    "SENTRUX-STRUCTURAL-COVERAGE-INCOMPLETE",
+                    format!(
+                        "Required language {language} had {files_for_language} file(s), but {} did not parse structurally.",
+                        unparsed_for_language.len()
+                    ),
+                )
+                .language(language)
+                .details(serde_json::json!({
+                    "unparsedFiles": unparsed_for_language
+                })),
+            );
+        }
+        required_details.push(serde_json::json!({
+            "language": language,
+            "files": files_for_language,
+            "parsedFiles": parsed_for_language,
+            "unparsedFiles": files_for_language.saturating_sub(parsed_for_language),
+            "complete": complete
+        }));
+    }
+
+    StructuralCoverage {
+        total_files: snapshot.total_files,
+        code_files,
+        parsed_files,
+        unparsed_files: code_files.saturating_sub(parsed_files),
+        parse_coverage: if code_files == 0 {
+            1.0
+        } else {
+            ((parsed_files as f64 / code_files as f64) * 10_000.0).round() / 10_000.0
+        },
+        function_count,
+        class_count,
+        import_edges: snapshot.import_graph.len(),
+        call_edges: snapshot.call_graph.len(),
+        required_languages: required_details,
+        unparsed_code_files,
+        fatal_diagnostics,
+    }
+}
+
+fn analysis_complete(context: &AnalysisContext, coverage: Option<&StructuralCoverage>) -> bool {
+    context.complete_without_coverage()
+        && coverage
+            .map(|coverage| coverage.fatal_diagnostics.is_empty())
+            .unwrap_or(true)
+}
+
+fn analysis_json(
+    context: &AnalysisContext,
+    coverage: Option<&StructuralCoverage>,
+) -> serde_json::Value {
+    analysis_json_with_extra(context, coverage, &[])
+}
+
+fn analysis_json_with_extra(
+    context: &AnalysisContext,
+    coverage: Option<&StructuralCoverage>,
+    extra_fatal: &[AnalysisDiagnostic],
+) -> serde_json::Value {
+    let mut fatal_diagnostics = context.fatal_diagnostics.clone();
+    if let Some(coverage) = coverage {
+        fatal_diagnostics.extend(coverage.fatal_diagnostics.clone());
+    }
+    fatal_diagnostics.extend(extra_fatal.iter().cloned());
+    serde_json::json!({
+        "complete": fatal_diagnostics.is_empty(),
+        "pluginRoot": context.plugin_root.as_ref().map(|path| path.display().to_string()),
+        "pluginRootSource": &context.plugin_root_source,
+        "requiredLanguages": &context.required_languages,
+        "immutable": true,
+        "mutationPolicy": {
+            "downloadsAllowed": false,
+            "pluginSyncAllowed": false,
+            "proPluginLoadAllowed": false
+        },
+        "inventory": {
+            "platformGrammar": sentrux_core::analysis::plugin::PluginManifest::grammar_filename(),
+            "platformKey": sentrux_core::analysis::plugin::grammar_platform_key(),
+            "languages": context.inventory.iter().map(PluginInventoryItem::to_json).collect::<Vec<_>>()
+        },
+        "structuralCoverage": coverage.map(StructuralCoverage::to_json),
+        "fatalDiagnostics": fatal_diagnostics.iter().map(AnalysisDiagnostic::to_json).collect::<Vec<_>>(),
+        "warnings": context.warnings.iter().map(AnalysisDiagnostic::to_json).collect::<Vec<_>>()
+    })
+}
+
+fn print_analysis_failure_text(context: &AnalysisContext, coverage: Option<&StructuralCoverage>) {
+    let payload = analysis_json(context, coverage);
+    println!("Analysis incomplete:");
+    if let Some(items) = payload["fatalDiagnostics"].as_array() {
+        for item in items {
+            println!(
+                "  - {}: {}",
+                item["code"].as_str().unwrap_or("SENTRUX-UNKNOWN"),
+                item["message"].as_str().unwrap_or("analysis failed")
+            );
+            if let Some(path) = item["path"].as_str() {
+                println!("    path: {path}");
+            }
+            if let Some(language) = item["language"].as_str() {
+                println!("    language: {language}");
+            }
+        }
+    }
+}
+
+fn fatal_payload_json(
+    command: &str,
+    path: &str,
+    include_untracked: bool,
+    context: &AnalysisContext,
+    coverage: Option<&StructuralCoverage>,
+    diagnostic: AnalysisDiagnostic,
+) -> String {
+    let analysis = analysis_json_with_extra(context, coverage, &[diagnostic.clone()]);
+    let payload = serde_json::json!({
+        "pass": false,
+        "passed": false,
+        "command": command,
+        "path": path,
+        "scan": {
+            "include_untracked": include_untracked
+        },
+        "analysis": analysis,
+        "fatalDiagnostics": [diagnostic.to_json()]
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
+fn scan_error_diagnostic(error: &core::types::AppError) -> AnalysisDiagnostic {
+    let message = error.to_string();
+    if message.contains("SENTRUX-GIT-UNTRACKED-ENUM-FAILED") {
+        AnalysisDiagnostic::fatal(
+            "SENTRUX-GIT-UNTRACKED-ENUM-FAILED",
+            "Failed to enumerate untracked Git files while --include-untracked was requested.",
+        )
+        .details(serde_json::json!({ "error": message }))
+    } else {
+        AnalysisDiagnostic::fatal("SENTRUX-SCAN-FAILED", message)
     }
 }
 
@@ -616,18 +1497,80 @@ fn run_analytics(action: Option<AnalyticsAction>) {
 // ---------------------------------------------------------------------------
 
 /// Run architectural rules check from CLI. Returns exit code.
-fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
-    let root = std::path::Path::new(path);
+fn run_check(
+    path: &str,
+    include_untracked: bool,
+    json_output: bool,
+    analysis_options: CliAnalysisOptions,
+) -> i32 {
+    apply_cli_plugin_root(&analysis_options);
+    let context = prepare_analysis_context(&analysis_options);
+    let root = Path::new(path);
     if !root.is_dir() {
-        eprintln!("Error: not a directory: {path}");
+        let diagnostic =
+            AnalysisDiagnostic::fatal("SENTRUX-PATH-INVALID", format!("Not a directory: {path}"))
+                .path(path);
+        if json_output {
+            println!(
+                "{}",
+                fatal_payload_json("check", path, include_untracked, &context, None, diagnostic)
+            );
+        } else {
+            eprintln!("Error: not a directory: {path}");
+        }
+        return 1;
+    }
+
+    if !analysis_complete(&context, None) {
+        if json_output {
+            let payload = serde_json::json!({
+                "pass": false,
+                "command": "check",
+                "path": path,
+                "scan": {
+                    "include_untracked": include_untracked
+                },
+                "analysis": analysis_json(&context, None)
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+            );
+        } else {
+            print_analysis_failure_text(&context, None);
+        }
         return 1;
     }
 
     let config = match metrics::rules::RulesConfig::try_load(root) {
         Some(c) => c,
         None => {
-            eprintln!("No .sentrux/rules.toml found in {path}");
-            eprintln!("Create one to define architectural constraints.");
+            let diagnostic = AnalysisDiagnostic::fatal(
+                "SENTRUX-RULES-MISSING",
+                format!("No .sentrux/rules.toml found in {path}."),
+            )
+            .path(
+                root.join(".sentrux")
+                    .join("rules.toml")
+                    .display()
+                    .to_string(),
+            );
+            if json_output {
+                println!(
+                    "{}",
+                    fatal_payload_json(
+                        "check",
+                        path,
+                        include_untracked,
+                        &context,
+                        None,
+                        diagnostic
+                    )
+                );
+            } else {
+                eprintln!("No .sentrux/rules.toml found in {path}");
+                eprintln!("Create one to define architectural constraints.");
+            }
             return 1;
         }
     };
@@ -647,11 +1590,28 @@ fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
     ) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("Scan failed: {e}");
+            let diagnostic = scan_error_diagnostic(&e);
+            if json_output {
+                println!(
+                    "{}",
+                    fatal_payload_json(
+                        "check",
+                        path,
+                        include_untracked,
+                        &context,
+                        None,
+                        diagnostic
+                    )
+                );
+            } else {
+                eprintln!("Scan failed: {e}");
+            }
             return 1;
         }
     };
 
+    let coverage =
+        compute_structural_coverage(&result.snapshot, &analysis_options.require_languages);
     let health = metrics::compute_health(&result.snapshot);
     let arch_report = metrics::arch::compute_arch(&result.snapshot);
     let check = metrics::rules::check_rules(
@@ -660,11 +1620,26 @@ fn run_check(path: &str, include_untracked: bool, json_output: bool) -> i32 {
         &arch_report,
         &result.snapshot.import_graph,
     );
+    let analysis_is_complete = analysis_complete(&context, Some(&coverage));
 
     if json_output {
-        print_check_json(&check, &health, &result.snapshot)
+        print_check_json(
+            &check,
+            &health,
+            &result.snapshot,
+            analysis_json(&context, Some(&coverage)),
+            check.passed && analysis_is_complete,
+        )
     } else {
-        print_check_results(&check, &health, &result.snapshot)
+        let rules_exit =
+            print_check_results(&check, &health, &result.snapshot, &context, &coverage);
+        if !analysis_is_complete {
+            println!();
+            print_analysis_failure_text(&context, Some(&coverage));
+            1
+        } else {
+            rules_exit
+        }
     }
 }
 
@@ -673,6 +1648,8 @@ fn print_check_results(
     check: &metrics::rules::RuleCheckResult,
     health: &metrics::HealthReport,
     snapshot: &core::snapshot::Snapshot,
+    context: &AnalysisContext,
+    coverage: &StructuralCoverage,
 ) -> i32 {
     println!("sentrux check — {} rules checked\n", check.rules_checked);
     println!(
@@ -680,6 +1657,7 @@ fn print_check_results(
         (health.quality_signal * 10000.0).round() as u32
     );
     println!("Scan: include_untracked={}", snapshot.include_untracked);
+    print_analysis_summary(context, coverage);
     print_csharp_reference_stats(snapshot);
 
     if check.violations.is_empty() {
@@ -762,13 +1740,50 @@ fn print_check_json(
     check: &metrics::rules::RuleCheckResult,
     health: &metrics::HealthReport,
     snapshot: &core::snapshot::Snapshot,
+    analysis: serde_json::Value,
+    overall_pass: bool,
 ) -> i32 {
-    println!("{}", metrics::check_report_json(check, health, snapshot));
-    if check.passed {
+    println!(
+        "{}",
+        check_report_json_with_analysis(check, health, snapshot, analysis, overall_pass)
+    );
+    if overall_pass {
         0
     } else {
         1
     }
+}
+
+fn check_report_json_with_analysis(
+    check: &metrics::rules::RuleCheckResult,
+    health: &metrics::HealthReport,
+    snapshot: &core::snapshot::Snapshot,
+    analysis: serde_json::Value,
+    overall_pass: bool,
+) -> String {
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&metrics::check_report_json(check, health, snapshot))
+            .unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("pass".to_string(), serde_json::json!(overall_pass));
+        object.insert("analysis".to_string(), analysis);
+    }
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
+fn print_analysis_summary(context: &AnalysisContext, coverage: &StructuralCoverage) {
+    println!(
+        "Analysis: complete={} plugin_root={} required_languages=[{}] parsed={}/{} code_files",
+        analysis_complete(context, Some(coverage)),
+        context
+            .plugin_root
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(none)".to_string()),
+        context.required_languages.join(", "),
+        coverage.parsed_files,
+        coverage.code_files,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -776,10 +1791,40 @@ fn print_check_json(
 // ---------------------------------------------------------------------------
 
 /// Run structural regression gate from CLI. Returns exit code.
-fn run_gate(path: &str, save_mode: bool, include_untracked: bool, json_output: bool) -> i32 {
-    let root = std::path::Path::new(path);
+fn run_gate(
+    path: &str,
+    save_mode: bool,
+    include_untracked: bool,
+    json_output: bool,
+    analysis_options: CliAnalysisOptions,
+) -> i32 {
+    apply_cli_plugin_root(&analysis_options);
+    let context = prepare_analysis_context(&analysis_options);
+    let root = Path::new(path);
     if !root.is_dir() {
-        eprintln!("Error: not a directory: {path}");
+        let diagnostic =
+            AnalysisDiagnostic::fatal("SENTRUX-PATH-INVALID", format!("Not a directory: {path}"))
+                .path(path);
+        if json_output {
+            println!(
+                "{}",
+                fatal_payload_json("gate", path, include_untracked, &context, None, diagnostic)
+            );
+        } else {
+            eprintln!("Error: not a directory: {path}");
+        }
+        return 1;
+    }
+
+    if !analysis_complete(&context, None) {
+        if json_output {
+            println!(
+                "{}",
+                gate_analysis_failure_json(path, include_untracked, &context, None)
+            );
+        } else {
+            print_analysis_failure_text(&context, None);
+        }
         return 1;
     }
 
@@ -790,13 +1835,47 @@ fn run_gate(path: &str, save_mode: bool, include_untracked: bool, json_output: b
     } else {
         eprintln!("Scanning {path}...");
     }
-    let (health, arch_report) = match scan_gate_health(path, include_untracked) {
+    let result = match analysis::scanner::scan_directory_with_options(
+        path,
+        None,
+        None,
+        &cli_scan_limits(),
+        None,
+        analysis::scanner::ScanOptions { include_untracked },
+    ) {
         Ok(r) => r,
-        Err(message) => {
-            eprintln!("{message}");
+        Err(e) => {
+            let diagnostic = scan_error_diagnostic(&e);
+            if json_output {
+                println!(
+                    "{}",
+                    fatal_payload_json("gate", path, include_untracked, &context, None, diagnostic)
+                );
+            } else {
+                eprintln!("Scan failed: {e}");
+            }
             return 1;
         }
     };
+
+    let coverage =
+        compute_structural_coverage(&result.snapshot, &analysis_options.require_languages);
+    let analysis_is_complete = analysis_complete(&context, Some(&coverage));
+    if !analysis_is_complete {
+        if json_output {
+            println!(
+                "{}",
+                gate_analysis_failure_json(path, include_untracked, &context, Some(&coverage))
+            );
+        } else {
+            print_analysis_failure_text(&context, Some(&coverage));
+        }
+        return 1;
+    }
+
+    let health = metrics::compute_health(&result.snapshot);
+    let arch_report = metrics::arch::compute_arch(&result.snapshot);
+    let analysis = analysis_json(&context, Some(&coverage));
 
     if save_mode {
         gate_save(
@@ -805,6 +1884,7 @@ fn run_gate(path: &str, save_mode: bool, include_untracked: bool, json_output: b
             &arch_report,
             include_untracked,
             json_output,
+            analysis,
         )
     } else {
         gate_compare(
@@ -813,6 +1893,7 @@ fn run_gate(path: &str, save_mode: bool, include_untracked: bool, json_output: b
             &arch_report,
             include_untracked,
             json_output,
+            analysis,
         )
     }
 }
@@ -842,6 +1923,7 @@ fn gate_save(
     _arch_report: &metrics::arch::ArchReport,
     include_untracked: bool,
     json_output: bool,
+    analysis: serde_json::Value,
 ) -> i32 {
     if let Some(parent) = baseline_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
@@ -859,6 +1941,7 @@ fn gate_save(
                     "scan": {
                         "include_untracked": include_untracked
                     },
+                    "analysis": analysis,
                     "quality": (health.quality_signal * 10000.0).round() as u32,
                     "metrics": {
                         "coupling": {
@@ -891,6 +1974,7 @@ fn gate_save(
                     (health.quality_signal * 10000.0).round() as u32
                 );
                 println!("Scan: include_untracked={include_untracked}");
+                println!("Analysis: complete=true");
                 println!("\nRun `sentrux gate` after making changes to compare.");
             }
             0
@@ -908,6 +1992,7 @@ fn gate_compare(
     arch_report: &metrics::arch::ArchReport,
     include_untracked: bool,
     json_output: bool,
+    analysis: serde_json::Value,
 ) -> i32 {
     let baseline = match metrics::arch::ArchBaseline::load(baseline_path) {
         Ok(b) => b,
@@ -924,12 +2009,19 @@ fn gate_compare(
     let diff = baseline.diff(health);
 
     if json_output {
-        println!("{}", gate_report_json_with_scan(&diff, include_untracked));
+        println!(
+            "{}",
+            gate_report_json_with_analysis(&diff, include_untracked, analysis, !diff.degraded)
+        );
         return if diff.degraded { 1 } else { 0 };
     }
 
     println!("sentrux gate — structural regression check\n");
     println!("Scan:         include_untracked={include_untracked}");
+    println!(
+        "Analysis:     complete={}",
+        analysis["complete"].as_bool().unwrap_or(false)
+    );
     println!(
         "Quality:      {} -> {}",
         (diff.signal_before * 10000.0).round() as u32,
@@ -978,6 +2070,30 @@ fn gate_compare(
     }
 }
 
+fn gate_analysis_failure_json(
+    path: &str,
+    include_untracked: bool,
+    context: &AnalysisContext,
+    coverage: Option<&StructuralCoverage>,
+) -> String {
+    let analysis = analysis_json(context, coverage);
+    let payload = serde_json::json!({
+        "passed": false,
+        "command": "gate",
+        "path": path,
+        "scan": {
+            "include_untracked": include_untracked
+        },
+        "analysis": analysis,
+        "degradations": [{
+            "metric": "analysis",
+            "message": "Structural analysis was incomplete; gate failed closed.",
+            "hardFailure": true
+        }]
+    });
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
 fn gate_report_json_with_scan(diff: &metrics::arch::ArchDiff, include_untracked: bool) -> String {
     let mut payload: serde_json::Value =
         serde_json::from_str(&metrics::arch::gate_report_json(diff))
@@ -989,6 +2105,28 @@ fn gate_report_json_with_scan(diff: &metrics::arch::ArchDiff, include_untracked:
                 "include_untracked": include_untracked
             }),
         );
+    }
+    serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+}
+
+fn gate_report_json_with_analysis(
+    diff: &metrics::arch::ArchDiff,
+    include_untracked: bool,
+    analysis: serde_json::Value,
+    overall_pass: bool,
+) -> String {
+    let mut payload: serde_json::Value =
+        serde_json::from_str(&metrics::arch::gate_report_json(diff))
+            .unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("passed".to_string(), serde_json::json!(overall_pass));
+        object.insert(
+            "scan".to_string(),
+            serde_json::json!({
+                "include_untracked": include_untracked
+            }),
+        );
+        object.insert("analysis".to_string(), analysis);
     }
     serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
 }
@@ -1176,6 +2314,11 @@ fn run_plugin(action: PluginAction) {
         PluginAction::List => plugin_list(),
         PluginAction::Init { name } => plugin_init(&name),
         PluginAction::Validate { dir } => plugin_validate(&dir),
+        PluginAction::Verify {
+            json,
+            plugin_root,
+            require_languages,
+        } => std::process::exit(plugin_verify(json, plugin_root, require_languages)),
         PluginAction::AddStandard => plugin_add_standard(),
         PluginAction::Add { name } => plugin_add(&name),
         PluginAction::Remove { name } => plugin_remove(&name),
@@ -1299,6 +2442,58 @@ fn plugin_validate(dir: &str) {
             println!("FAIL — {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+fn plugin_verify(
+    json_output: bool,
+    plugin_root: Option<String>,
+    require_languages: Vec<String>,
+) -> i32 {
+    std::env::set_var(sentrux_core::analysis::plugin::IMMUTABLE_ANALYSIS_ENV, "1");
+    let options = CliAnalysisOptions::new(plugin_root, require_languages);
+    apply_cli_plugin_root(&options);
+    let context = prepare_analysis_context(&options);
+    let passed = analysis_complete(&context, None);
+    if json_output {
+        let payload = serde_json::json!({
+            "passed": passed,
+            "command": "plugin verify",
+            "analysis": analysis_json(&context, None)
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_else(|_| payload.to_string())
+        );
+    } else {
+        println!(
+            "Plugin root: {} ({})",
+            context
+                .plugin_root
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "(none)".to_string()),
+            context.plugin_root_source
+        );
+        println!(
+            "Required languages: [{}]",
+            context.required_languages.join(", ")
+        );
+        for item in &context.inventory {
+            println!("  {}: {}", item.language, item.status);
+            for diagnostic in &item.diagnostics {
+                println!("    {}: {}", diagnostic.code, diagnostic.message);
+            }
+        }
+        if !passed {
+            println!();
+            print_analysis_failure_text(&context, None);
+        }
+    }
+    if passed {
+        0
+    } else {
+        1
     }
 }
 
@@ -1684,6 +2879,199 @@ mod gate_cli_tests {
     }
 
     #[test]
+    fn check_accepts_plugin_root_and_required_languages() {
+        let cli = Cli::try_parse_from([
+            "sentrux",
+            "check",
+            "--plugin-root",
+            "C:\\plugins",
+            "--require-language",
+            "csharp",
+            "--require-language",
+            "rust",
+            ".",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Check {
+                plugin_root,
+                require_languages,
+                ..
+            }) => {
+                assert_eq!(plugin_root.as_deref(), Some("C:\\plugins"));
+                assert_eq!(require_languages, vec!["csharp", "rust"]);
+            }
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn plugin_verify_accepts_json_plugin_root_and_required_language() {
+        let cli = Cli::try_parse_from([
+            "sentrux",
+            "plugin",
+            "verify",
+            "--json",
+            "--plugin-root",
+            "C:\\plugins",
+            "--require-language",
+            "csharp",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Some(Command::Plugin {
+                action:
+                    PluginAction::Verify {
+                        json,
+                        plugin_root,
+                        require_languages,
+                    },
+            }) => {
+                assert!(json);
+                assert_eq!(plugin_root.as_deref(), Some("C:\\plugins"));
+                assert_eq!(require_languages, vec!["csharp"]);
+            }
+            _ => panic!("expected plugin verify command"),
+        }
+    }
+
+    #[test]
+    fn required_language_missing_plugin_reports_stable_json_diagnostic() {
+        let root = unique_root("missing-plugin");
+        let result = (|| {
+            let context = prepare_analysis_context(&CliAnalysisOptions::new(
+                Some(root.to_string_lossy().to_string()),
+                vec!["csharp".to_string()],
+            ));
+            let payload = analysis_json(&context, None);
+            assert_eq!(payload["complete"], false);
+            let codes = diagnostic_codes(&payload);
+            assert!(
+                codes.contains(&"SENTRUX-LANGUAGE-PLUGIN-MISSING".to_string()),
+                "expected missing plugin diagnostic, got {payload}"
+            );
+            assert_eq!(payload["inventory"]["languages"][0]["language"], "csharp");
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    #[test]
+    fn required_language_missing_checksum_reports_stable_json_diagnostic() {
+        let root = unique_root("missing-checksum");
+        let result = (|| {
+            let plugin = root.join("csharp");
+            fs::create_dir_all(plugin.join("queries")).unwrap();
+            fs::create_dir_all(plugin.join("grammars")).unwrap();
+            fs::write(
+                plugin.join("plugin.toml"),
+                r#"[plugin]
+name = "csharp"
+display_name = "C#"
+version = "0.0.0"
+extensions = ["cs"]
+
+[grammar]
+source = "https://example.invalid/tree-sitter-c-sharp"
+ref = "main"
+abi_version = 14
+
+[queries]
+capabilities = []
+
+[checksums]
+"#,
+            )
+            .unwrap();
+            fs::write(plugin.join("queries").join("tags.scm"), "").unwrap();
+            fs::write(
+                plugin
+                    .join("grammars")
+                    .join(sentrux_core::analysis::plugin::PluginManifest::grammar_filename()),
+                b"not a dynamic grammar",
+            )
+            .unwrap();
+
+            let context = prepare_analysis_context(&CliAnalysisOptions::new(
+                Some(root.to_string_lossy().to_string()),
+                vec!["csharp".to_string()],
+            ));
+            let payload = analysis_json(&context, None);
+            let codes = diagnostic_codes(&payload);
+            assert!(
+                codes.contains(&"SENTRUX-GRAMMAR-CHECKSUM-MISSING".to_string()),
+                "expected missing checksum diagnostic, got {payload}"
+            );
+        })();
+        let _ = fs::remove_dir_all(&root);
+        result
+    }
+
+    #[test]
+    fn coverage_failure_reports_exact_unparsed_required_file() {
+        let file = core::types::FileNode {
+            path: "src/Program.cs".to_string(),
+            name: "Program.cs".to_string(),
+            is_dir: false,
+            lines: 12,
+            logic: 10,
+            comments: 0,
+            blanks: 2,
+            funcs: 0,
+            mtime: 0.0,
+            gs: String::new(),
+            lang: "csharp".to_string(),
+            sa: None,
+            children: None,
+        };
+        let root = core::types::FileNode {
+            path: String::new(),
+            name: "repo".to_string(),
+            is_dir: true,
+            lines: 0,
+            logic: 0,
+            comments: 0,
+            blanks: 0,
+            funcs: 0,
+            mtime: 0.0,
+            gs: String::new(),
+            lang: String::new(),
+            sa: None,
+            children: Some(vec![file]),
+        };
+        let snapshot = core::snapshot::Snapshot {
+            root: std::sync::Arc::new(root),
+            total_files: 1,
+            total_lines: 12,
+            total_dirs: 1,
+            include_untracked: true,
+            csharp_reference_stats: Default::default(),
+            call_graph: Vec::new(),
+            import_graph: Vec::new(),
+            inherit_graph: Vec::new(),
+            entry_points: Vec::new(),
+            exec_depth: std::collections::HashMap::new(),
+        };
+
+        let coverage = compute_structural_coverage(&snapshot, &["csharp".to_string()]);
+        assert_eq!(coverage.fatal_diagnostics.len(), 1);
+        assert_eq!(
+            coverage.fatal_diagnostics[0].code,
+            "SENTRUX-STRUCTURAL-COVERAGE-INCOMPLETE"
+        );
+        assert!(
+            coverage
+                .unparsed_code_files
+                .iter()
+                .any(|file| { file["path"] == "src/Program.cs" && file["language"] == "csharp" }),
+            "expected src/Program.cs in unparsed files: {:?}",
+            coverage.unparsed_code_files
+        );
+    }
+
+    #[test]
     fn gate_include_untracked_catches_untracked_regression_with_offender_details() {
         let root = unique_root("gate-untracked");
         let result = (|| {
@@ -1692,17 +3080,38 @@ mod gate_cli_tests {
             run_git(&root, &["add", "src/Baseline.cs"]);
 
             let root_str = root.to_str().unwrap();
-            assert_eq!(run_gate(root_str, true, false, true), 0);
+            assert_eq!(
+                run_gate(
+                    root_str,
+                    true,
+                    false,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
+                0
+            );
 
             write_source(&root, "src/NewComplex.cs", complex_csharp("NewComplex"));
 
             assert_eq!(
-                run_gate(root_str, false, false, true),
+                run_gate(
+                    root_str,
+                    false,
+                    false,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
                 0,
                 "default gate must preserve tracked-only behavior"
             );
             assert_eq!(
-                run_gate(root_str, false, true, true),
+                run_gate(
+                    root_str,
+                    false,
+                    true,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
                 1,
                 "gate --include-untracked must fail on the new complex function"
             );
@@ -1731,17 +3140,38 @@ mod gate_cli_tests {
             run_git(&root, &["add", "src/Tracked.cs"]);
 
             let root_str = root.to_str().unwrap();
-            assert_eq!(run_gate(root_str, true, false, true), 0);
+            assert_eq!(
+                run_gate(
+                    root_str,
+                    true,
+                    false,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
+                0
+            );
 
             write_source(&root, "src/Tracked.cs", complex_csharp("Tracked"));
 
             assert_eq!(
-                run_gate(root_str, false, false, true),
+                run_gate(
+                    root_str,
+                    false,
+                    false,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
                 1,
                 "tracked working-tree edits must still be scanned without the flag"
             );
             assert_eq!(
-                run_gate(root_str, false, true, true),
+                run_gate(
+                    root_str,
+                    false,
+                    true,
+                    true,
+                    CliAnalysisOptions::new(None, Vec::new())
+                ),
                 1,
                 "tracked working-tree edits must also be scanned with the flag"
             );
@@ -1793,6 +3223,16 @@ mod gate_cli_tests {
             .iter()
             .filter_map(|item| item["file"].as_str())
             .map(normalize_path)
+            .collect()
+    }
+
+    fn diagnostic_codes(payload: &serde_json::Value) -> Vec<String> {
+        payload["fatalDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["code"].as_str())
+            .map(str::to_string)
             .collect()
     }
 

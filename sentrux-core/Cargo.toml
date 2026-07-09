@@ -32,6 +32,7 @@ libloading = "0.8"
 dirs = "6"
 ed25519-dalek = { version = "2", features = ["std"] }
 base64 = "0.22"
+sha2 = "0.10"
 
 [features]
 default = []

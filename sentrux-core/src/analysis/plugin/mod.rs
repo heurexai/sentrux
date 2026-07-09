@@ -13,9 +13,16 @@ pub mod loader;
 pub mod manifest;
 pub mod profile;
 
-pub use loader::{LoadedPlugin, PluginLoadError, load_all_plugins, plugins_dir};
+pub use loader::{
+    default_plugins_dir, grammar_platform_key, grammar_sha256, load_all_plugins,
+    load_grammar_dynamic, manifest_checksum_for_platform, plugins_dir, LoadedPlugin,
+    PluginLoadError, IMMUTABLE_ANALYSIS_ENV, PLUGIN_ROOT_ENV,
+};
 pub use manifest::PluginManifest;
-pub use profile::{LanguageProfile, LanguageSemantics, LanguageThresholds, ComplexityNodes, ProjectConfig, ResolverConfig, DEFAULT_PROFILE};
+pub use profile::{
+    ComplexityNodes, LanguageProfile, LanguageSemantics, LanguageThresholds, ProjectConfig,
+    ResolverConfig, DEFAULT_PROFILE,
+};
 
 /// Silently sync embedded plugin configs to ~/.sentrux/plugins/ at startup.
 /// Overwrites plugin.toml and tags.scm if the binary version is newer.
@@ -33,15 +40,23 @@ pub fn sync_embedded_plugins() {
         let scm_dir = plugin_dir.join("queries");
         let scm_path = scm_dir.join("tags.scm");
 
+        let installed_toml = if toml_path.exists() {
+            Some(std::fs::read_to_string(&toml_path).unwrap_or_default())
+        } else {
+            None
+        };
+        let target_toml = installed_toml
+            .as_deref()
+            .map(|installed| merge_existing_checksums(toml_content, installed))
+            .unwrap_or_else(|| toml_content.to_string());
+
         // Check if config needs update: compare CONTENT, not just version.
         // This handles: grammar tarballs overwriting with old configs,
         // user corruption, any mismatch between embedded and installed.
-        let needs_update = if toml_path.exists() {
-            let installed = std::fs::read_to_string(&toml_path).unwrap_or_default();
-            installed.trim() != toml_content.trim()
-        } else {
-            true
-        };
+        let needs_update = installed_toml
+            .as_deref()
+            .map(|installed| installed.trim() != target_toml.trim())
+            .unwrap_or(true);
         let scm_needs_update = if scm_path.exists() && !scm_content.is_empty() {
             let installed_scm = std::fs::read_to_string(&scm_path).unwrap_or_default();
             installed_scm.trim() != scm_content.trim()
@@ -60,10 +75,67 @@ pub fn sync_embedded_plugins() {
 
         // Write plugin.toml and tags.scm — preserve grammar .dylib
         if needs_update {
-            let _ = std::fs::write(&toml_path, toml_content);
+            let _ = std::fs::write(&toml_path, &target_toml);
         }
         if scm_needs_update && !scm_content.is_empty() {
             let _ = std::fs::write(&scm_path, scm_content);
         }
     }
+}
+
+fn merge_existing_checksums(base_toml: &str, installed_toml: &str) -> String {
+    let checksum_lines = extract_checksum_lines(installed_toml);
+    if checksum_lines.is_empty() {
+        return base_toml.to_string();
+    }
+
+    let mut output = Vec::new();
+    let mut in_checksums = false;
+    let mut inserted = false;
+    for line in base_toml.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[checksums]" {
+            output.push(line.to_string());
+            output.extend(checksum_lines.iter().cloned());
+            in_checksums = true;
+            inserted = true;
+            continue;
+        }
+        if in_checksums && trimmed.starts_with('[') {
+            in_checksums = false;
+        }
+        if in_checksums {
+            continue;
+        }
+        output.push(line.to_string());
+    }
+    if !inserted {
+        output.push(String::new());
+        output.push("[checksums]".to_string());
+        output.extend(checksum_lines);
+    }
+    let mut merged = output.join("\n");
+    if base_toml.ends_with('\n') {
+        merged.push('\n');
+    }
+    merged
+}
+
+fn extract_checksum_lines(toml_content: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut in_checksums = false;
+    for line in toml_content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[checksums]" {
+            in_checksums = true;
+            continue;
+        }
+        if in_checksums && trimmed.starts_with('[') {
+            break;
+        }
+        if in_checksums && trimmed.contains('=') && !trimmed.starts_with('#') {
+            lines.push(trimmed.to_string());
+        }
+    }
+    lines
 }

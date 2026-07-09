@@ -10,8 +10,16 @@
 
 use super::manifest::PluginManifest;
 use super::profile::LanguageProfile;
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tree_sitter::Language;
+
+/// Explicit plugin root for deterministic CLI analysis.
+pub const PLUGIN_ROOT_ENV: &str = "SENTRUX_PLUGIN_ROOT";
+
+/// When set, plugin loading must not copy bundled grammars or mutate user state.
+pub const IMMUTABLE_ANALYSIS_ENV: &str = "SENTRUX_IMMUTABLE_ANALYSIS";
 
 /// Result of loading a single plugin.
 #[derive(Debug)]
@@ -39,15 +47,28 @@ pub struct PluginLoadError {
     pub error: String,
 }
 
-/// Get the user's plugins directory path (~/.sentrux/plugins/).
-pub fn plugins_dir() -> Option<PathBuf> {
+/// Get the default user plugins directory path (~/.sentrux/plugins/).
+pub fn default_plugins_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".sentrux").join("plugins"))
+}
+
+/// Get the effective plugins directory path.
+///
+/// `SENTRUX_PLUGIN_ROOT` is intentionally honored here so CLI gates can be
+/// anchored to a provisioned, immutable plugin inventory instead of ambient
+/// user-home state.
+pub fn plugins_dir() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os(PLUGIN_ROOT_ENV).filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(root));
+    }
+    default_plugins_dir()
 }
 
 /// Get the bundled plugins directory (next to the executable).
 /// Used for distribution archives where grammars ship alongside the binary.
 pub fn bundled_plugins_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok()
+    std::env::current_exe()
+        .ok()
         .and_then(|p| p.parent().map(|d| d.join("plugins")))
         .filter(|d| d.is_dir())
 }
@@ -67,10 +88,12 @@ pub fn load_all_plugins() -> (Vec<LoadedPlugin>, Vec<PluginLoadError>) {
         _ => return (loaded, errors),
     };
 
-    // If bundled plugins exist, copy any missing grammars to user dir
-    // This handles: fresh install from distribution archive
-    if let Some(bundled) = bundled_plugins_dir() {
-        copy_bundled_grammars(&bundled, &dir);
+    // If bundled plugins exist, copy any missing grammars to user dir.
+    // Immutable CLI analysis must never repair or mutate plugin state.
+    if std::env::var_os(IMMUTABLE_ANALYSIS_ENV).is_none() {
+        if let Some(bundled) = bundled_plugins_dir() {
+            copy_bundled_grammars(&bundled, &dir);
+        }
     }
 
     let entries = match std::fs::read_dir(&dir) {
@@ -134,7 +157,10 @@ fn load_single_plugin(plugin_dir: &Path) -> Result<LoadedPlugin, String> {
     verify_checksum(&manifest, &grammar_path, grammar_file)?;
 
     // 6. Load the grammar via dynamic library
-    let symbol_name = manifest.grammar.symbol_name.as_deref()
+    let symbol_name = manifest
+        .grammar
+        .symbol_name
+        .as_deref()
         .unwrap_or(&manifest.plugin.name);
     let grammar = load_grammar_dynamic(&grammar_path, symbol_name)?;
 
@@ -171,20 +197,61 @@ fn load_single_plugin(plugin_dir: &Path) -> Result<LoadedPlugin, String> {
 }
 
 /// Verify SHA256 checksum of grammar binary against manifest.
-fn verify_checksum(manifest: &PluginManifest, grammar_path: &Path, platform_key: &str) -> Result<(), String> {
-    // Strip extension to get platform key (e.g., "darwin-arm64.dylib" → "darwin-arm64")
-    let key = platform_key.rsplit_once('.').map_or(platform_key, |(k, _)| k);
+pub fn grammar_platform_key() -> &'static str {
+    let filename = PluginManifest::grammar_filename();
+    filename.rsplit_once('.').map_or(filename, |(key, _)| key)
+}
+
+/// Return the manifest checksum value for the current platform, if present.
+pub fn manifest_checksum_for_platform<'a>(manifest: &'a PluginManifest) -> Option<&'a str> {
+    manifest
+        .checksums
+        .get(grammar_platform_key())
+        .map(String::as_str)
+}
+
+/// Compute SHA-256 for a grammar binary.
+pub fn grammar_sha256(grammar_path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(grammar_path)
+        .map_err(|e| format!("Failed to read grammar for checksum: {}", e))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("Failed to read grammar for checksum: {}", e))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Verify SHA256 checksum of grammar binary against manifest.
+fn verify_checksum(
+    manifest: &PluginManifest,
+    grammar_path: &Path,
+    platform_key: &str,
+) -> Result<(), String> {
+    let key = platform_key
+        .rsplit_once('.')
+        .map_or(platform_key, |(k, _)| k);
     let expected = match manifest.checksums.get(key) {
-        Some(hash) => hash,
+        Some(hash) if !hash.trim().is_empty() => hash.trim().to_ascii_lowercase(),
         None => return Ok(()), // No checksum in manifest = skip verification
+        Some(_) => return Ok(()),
     };
 
-    let bytes = std::fs::read(grammar_path)
-        .map_err(|e| format!("Failed to read grammar for checksum: {}", e))?;
-
-    // Simple SHA256 via manual computation is heavy — for now, skip if no sha2 crate.
-    // TODO: Add sha2 dependency and verify properly.
-    let _ = (expected, bytes);
+    let actual = grammar_sha256(grammar_path)?;
+    if actual != expected {
+        return Err(format!(
+            "Checksum mismatch for {}: expected {}, got {}",
+            grammar_path.display(),
+            expected,
+            actual
+        ));
+    }
     Ok(())
 }
 
@@ -192,7 +259,7 @@ fn verify_checksum(manifest: &PluginManifest, grammar_path: &Path, platform_key:
 ///
 /// The library must export a function named `tree_sitter_<name>` that returns
 /// a `*const TSLanguage` pointer. This is the standard tree-sitter convention.
-fn load_grammar_dynamic(path: &Path, lang_name: &str) -> Result<Language, String> {
+pub fn load_grammar_dynamic(path: &Path, lang_name: &str) -> Result<Language, String> {
     // Safety: we're loading a tree-sitter grammar .so/.dylib which exports
     // a single `tree_sitter_<name>()` function returning *const TSLanguage.
     // This is the same mechanism nvim-treesitter, helix, and zed use.
@@ -202,12 +269,16 @@ fn load_grammar_dynamic(path: &Path, lang_name: &str) -> Result<Language, String
 
         // tree-sitter convention: exported function is `tree_sitter_<name>`
         let func_name = format!("tree_sitter_{}", lang_name);
-        let func: libloading::Symbol<unsafe extern "C" fn() -> Language> = lib
-            .get(func_name.as_bytes())
-            .map_err(|e| format!(
-                "Symbol '{}' not found in {}: {}. The grammar must export tree_sitter_{}().",
-                func_name, path.display(), e, lang_name
-            ))?;
+        let func: libloading::Symbol<unsafe extern "C" fn() -> Language> =
+            lib.get(func_name.as_bytes()).map_err(|e| {
+                format!(
+                    "Symbol '{}' not found in {}: {}. The grammar must export tree_sitter_{}().",
+                    func_name,
+                    path.display(),
+                    e,
+                    lang_name
+                )
+            })?;
 
         let language = func();
 
@@ -230,8 +301,14 @@ fn copy_bundled_grammars(bundled_dir: &Path, user_dir: &Path) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
-        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let bundled_grammar = path.join("grammars").join(grammar_file);
         let user_grammar = user_dir.join(&name).join("grammars").join(grammar_file);
         if bundled_grammar.exists() && !user_grammar.exists() {
@@ -285,7 +362,12 @@ mod tests {
             };
             match load_grammar_dynamic(&grammar_path, &symbol) {
                 Ok(lang) => {
-                    println!("\n=== {} ({} node types, symbol: tree_sitter_{}) ===", name, lang.node_kind_count(), symbol);
+                    println!(
+                        "\n=== {} ({} node types, symbol: tree_sitter_{}) ===",
+                        name,
+                        lang.node_kind_count(),
+                        symbol
+                    );
                     for id in 0..lang.node_kind_count() as u16 {
                         if lang.node_kind_is_named(id) {
                             let kind = lang.node_kind_for_id(id).unwrap_or("?");
