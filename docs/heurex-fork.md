@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.13`.
+Current fork release: `0.5.14`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.13 (Heurex fork)
+sentrux 0.5.14 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.13.0 (Heurex fork)`
-- `ProductVersion`: `0.5.13-heurex-fork`
+- `FileVersion`: `0.5.14.0 (Heurex fork)`
+- `ProductVersion`: `0.5.14-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -121,6 +121,10 @@ Stable fatal diagnostic codes include:
 ## Changelog
 
 ### Unreleased
+
+- No unreleased fork changes.
+
+### 0.5.14
 
 - `check`, `gate`, and `plugin verify` now support immutable plugin-root
   verification with `--plugin-root` and repeatable `--require-language`.
