@@ -47,13 +47,13 @@ jobs:
       - name: Install language grammars
         shell: bash
         run: |
-          # Try each recent release tag until we find one with grammars.
+          # Try release tags until we find one with grammars.
           # On tag pushes, the NEW release won't have grammars yet (still building).
-          # The previous release always has them. No race condition.
+          # Failed/superseded tags may not have grammar assets, so keep going.
           PLATFORM=$([ "$RUNNER_OS" = "macOS" ] && echo "darwin-arm64" || echo "linux-x86_64")
           mkdir -p ~/.sentrux/plugins
           DOWNLOADED=false
-          for TAG in $(git tag --sort=-v:refname | head -5); do
+          for TAG in $(git tag --sort=-v:refname); do
             URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/grammars-${PLATFORM}.tar.gz"
             if curl -fsSL "$URL" -o /tmp/grammars.tar.gz 2>/dev/null; then
               echo "Grammar bundle downloaded from ${TAG}"
@@ -63,7 +63,7 @@ jobs:
             fi
           done
           if [ "$DOWNLOADED" = false ]; then
-            echo "::error::Grammar download failed from all recent tags"
+            echo "::error::Grammar download failed from all release tags"
             exit 1
           fi
           # Sync embedded plugin configs and prove the runtime can load C#.
