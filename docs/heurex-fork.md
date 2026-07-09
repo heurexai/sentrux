@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.15`.
+Current fork release: `0.5.16`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.15 (Heurex fork)
+sentrux 0.5.16 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.15.0 (Heurex fork)`
-- `ProductVersion`: `0.5.15-heurex-fork`
+- `FileVersion`: `0.5.16.0 (Heurex fork)`
+- `ProductVersion`: `0.5.16-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -123,6 +123,13 @@ Stable fatal diagnostic codes include:
 ### Unreleased
 
 - No unreleased fork changes.
+
+### 0.5.16
+
+- Gate CLI tests now verify actionable file diagnostics on runners with or
+  without a loaded C# grammar, accepting either metric offenders or
+  `analysis.structuralCoverage.unparsedCodeFiles[]` as long as the exact file
+  responsible is named.
 
 ### 0.5.15
 

@@ -3119,13 +3119,7 @@ capabilities = []
             let payload = gate_payload(&root, true);
             assert_eq!(payload["passed"], false);
             assert_eq!(payload["scan"]["include_untracked"], true);
-            assert!(has_degradation(&payload, "complexFunctions"));
-            assert!(
-                added_complex_function_files(&payload)
-                    .iter()
-                    .any(|file| file == "src/NewComplex.cs"),
-                "expected src/NewComplex.cs in added complex-function offenders: {payload}"
-            );
+            assert_file_explains_gate_regression(&payload, "src/NewComplex.cs");
         })();
         let _ = fs::remove_dir_all(&root);
         result
@@ -3178,21 +3172,11 @@ capabilities = []
 
             let payload_without_flag = gate_payload(&root, false);
             assert_eq!(payload_without_flag["scan"]["include_untracked"], false);
-            assert!(
-                added_complex_function_files(&payload_without_flag)
-                    .iter()
-                    .any(|file| file == "src/Tracked.cs"),
-                "expected src/Tracked.cs in added complex-function offenders: {payload_without_flag}"
-            );
+            assert_file_explains_gate_regression(&payload_without_flag, "src/Tracked.cs");
 
             let payload_with_flag = gate_payload(&root, true);
             assert_eq!(payload_with_flag["scan"]["include_untracked"], true);
-            assert!(
-                added_complex_function_files(&payload_with_flag)
-                    .iter()
-                    .any(|file| file == "src/Tracked.cs"),
-                "expected src/Tracked.cs in added complex-function offenders: {payload_with_flag}"
-            );
+            assert_file_explains_gate_regression(&payload_with_flag, "src/Tracked.cs");
         })();
         let _ = fs::remove_dir_all(&root);
         result
@@ -3200,12 +3184,53 @@ capabilities = []
 
     fn gate_payload(root: &Path, include_untracked: bool) -> serde_json::Value {
         let root_str = root.to_str().unwrap();
-        let (health, _) = scan_gate_health(root_str, include_untracked).unwrap();
+        let options = CliAnalysisOptions::new(None, Vec::new());
+        let context = prepare_analysis_context(&options);
+        let result = analysis::scanner::scan_directory_with_options(
+            root_str,
+            None,
+            None,
+            &cli_scan_limits(),
+            None,
+            analysis::scanner::ScanOptions { include_untracked },
+        )
+        .unwrap();
+        let coverage = compute_structural_coverage(&result.snapshot, &options.require_languages);
+        let health = metrics::compute_health(&result.snapshot);
         let baseline =
             metrics::arch::ArchBaseline::load(&root.join(".sentrux").join("baseline.json"))
                 .unwrap();
         let diff = baseline.diff(&health);
-        serde_json::from_str(&gate_report_json_with_scan(&diff, include_untracked)).unwrap()
+        let analysis = analysis_json(&context, Some(&coverage));
+        serde_json::from_str(&gate_report_json_with_analysis(
+            &diff,
+            include_untracked,
+            analysis,
+            !diff.degraded,
+        ))
+        .unwrap()
+    }
+
+    fn assert_file_explains_gate_regression(payload: &serde_json::Value, path: &str) {
+        let expected = normalize_path(path);
+        if has_degradation(payload, "complexFunctions") {
+            assert!(
+                added_complex_function_files(payload)
+                    .iter()
+                    .any(|file| file == &expected),
+                "expected {expected} in added complex-function offenders: {payload}"
+            );
+            return;
+        }
+
+        assert!(
+            has_degradation(payload, "quality"),
+            "expected a complexFunctions or quality degradation: {payload}"
+        );
+        assert!(
+            unparsed_code_files(payload).iter().any(|file| file == &expected),
+            "expected {expected} in unparsed structural coverage when parser output is unavailable: {payload}"
+        );
     }
 
     fn has_degradation(payload: &serde_json::Value, metric: &str) -> bool {
@@ -3222,6 +3247,16 @@ capabilities = []
             .unwrap()
             .iter()
             .filter_map(|item| item["file"].as_str())
+            .map(normalize_path)
+            .collect()
+    }
+
+    fn unparsed_code_files(payload: &serde_json::Value) -> Vec<String> {
+        payload["analysis"]["structuralCoverage"]["unparsedCodeFiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["path"].as_str())
             .map(normalize_path)
             .collect()
     }
