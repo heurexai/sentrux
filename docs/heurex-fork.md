@@ -6,20 +6,20 @@ release names, and Windows executable metadata.
 
 ## Version Identity
 
-Current fork release: `0.5.17`.
+Current fork release: `0.5.18`.
 
 The CLI version string includes the fork stamp:
 
 ```text
-sentrux 0.5.17 (Heurex fork)
+sentrux 0.5.18 (Heurex fork)
 ```
 
 On Windows, the executable embeds a VERSIONINFO resource with:
 
 - `FileDescription`: `Sentrux Heurex fork`
 - `ProductName`: `Sentrux Heurex fork`
-- `FileVersion`: `0.5.17.0 (Heurex fork)`
-- `ProductVersion`: `0.5.17-heurex-fork`
+- `FileVersion`: `0.5.18.0 (Heurex fork)`
+- `ProductVersion`: `0.5.18-heurex-fork`
 - `PrivateBuild`: `Heurex fork`
 
 The Windows stamp is generated from `CARGO_PKG_VERSION` in
@@ -124,8 +124,18 @@ Stable fatal diagnostic codes include:
 
 - No unreleased fork changes.
 
+### 0.5.18
+
+- Grammar release builds now use GitHub's current Intel macOS runner label,
+  `macos-15-intel`, for the `darwin-x86_64` grammar bundle. The `0.5.17`
+  grammar workflow requested `macos-13`, which is no longer listed as a
+  supported standard GitHub-hosted runner label and left the final grammar
+  platform queued instead of producing a complete release matrix.
+
 ### 0.5.17
 
+- Superseded by `0.5.18` because the grammar release matrix used the obsolete
+  `macos-13` runner label for `darwin-x86_64`.
 - CI grammar provisioning now fails closed when no grammar bundle is available
   and verifies that the extracted bundle actually loads the C# runtime plugin
   before running tests. The root cause was that CI downloaded old grammar

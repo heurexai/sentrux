@@ -17,7 +17,7 @@
 > - **Agent-focused help** — `sentrux --help`, `sentrux check --help`, and `sentrux gate --help` now describe the commands and JSON paths agents should use to debug failed assessments.
 > - **Gate untracked-file option** — `sentrux gate --include-untracked` includes untracked, non-ignored worktree files in the regression scan while keeping the default tracked-only behavior unchanged.
 > - **Self-contained release downloads** — fork release workflows statically link the Windows CRT, vendor OpenSSL on Unix, avoid direct Linux GTK linkage, and audit release artifacts for forbidden runtime-package dependencies.
-> - **Windows fork version resource** — the Windows executable embeds version metadata identifying the fork build. This release is `0.5.17`; `ProductVersion` is stamped as `0.5.17-heurex-fork`.
+> - **Windows fork version resource** — the Windows executable embeds version metadata identifying the fork build. This release is `0.5.18`; `ProductVersion` is stamped as `0.5.18-heurex-fork`.
 >
 > Agent RCA shortcut:
 >
